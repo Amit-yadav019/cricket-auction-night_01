@@ -1,14 +1,19 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, User } from 'firebase/auth';
 import { getFirestore, doc, getDocFromServer, Firestore } from 'firebase/firestore';
-const firebaseConfig = { apiKey: import.meta.env.VITE_FIREBASE_API_KEY, authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN, projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID, storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET, messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID, appId: import.meta.env.VITE_FIREBASE_APP_ID };
+
+export const firebaseConfig = {
+  apiKey: "AIzaSyBWrly8D_Cm9b30skGQ6ygez7Xy9ae8nNk",
+  authDomain: "cricket-auction-night-a702f.firebaseapp.com",
+  projectId: "cricket-auction-night-a702f",
+  storageBucket: "cricket-auction-night-a702f.firebasestorage.app",
+  messagingSenderId: "98516714068",
+  appId: "1:98516714068:web:c1655906b2b00b7b0ba3c1"
+};
 
 const app = initializeApp(firebaseConfig);
 
-export const db: Firestore = firebaseConfig.firestoreDatabaseId
-  ? getFirestore(app, firebaseConfig.firestoreDatabaseId)
-  : getFirestore(app);
-
+export const db: Firestore = getFirestore(app);
 export const auth = getAuth(app);
 
 export enum OperationType {
@@ -75,7 +80,6 @@ export async function initAnonymousAuth(): Promise<{ user: User | null; error?: 
     return { user: cred.user };
   } catch (err: any) {
     console.warn('Anonymous auth note:', err?.message || err);
-    // If not enabled in console, return informative message
     return {
       user: null,
       error:
@@ -88,7 +92,7 @@ export async function initAnonymousAuth(): Promise<{ user: User | null; error?: 
 }
 
 /**
- * Test connectivity to Firestore as recommended by Firebase skill
+ * Test connectivity to Firestore as recommended by Firebase
  */
 export async function testConnection(): Promise<boolean> {
   try {
