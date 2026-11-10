@@ -1,0 +1,45 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isValidId(id) {
+      return id is string && id.size() <= 32 && id.matches('^[a-zA-Z0-9_-]+$');
+    }
+
+    match /rooms/{roomId} {
+      // Anyone with the room code can read the room state for real-time multiplayer updates
+      allow get: if isValidId(roomId);
+      allow list: if false;
+
+      // Anyone can create a room in lobby status with a valid 5-char code
+      allow create: if isValidId(roomId)
+        && request.resource.data.code == roomId
+        && request.resource.data.hostToken is string
+        && request.resource.data.hostToken.size() >= 8
+        && request.resource.data.status == 'lobby';
+
+      // Updates: Host actions (using matching hostToken) OR Owner team claiming OR Owner bids
+      allow update: if isValidId(roomId)
+        && (
+          // Host actions: host proves ownership via secret hostToken passed in write
+          (request.resource.data.lastActionHostToken == resource.data.hostToken)
+          // Host heartbeat update
+          || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['hostHeartbeat', 'updatedAt'])
+              && request.resource.data.hostToken == resource.data.hostToken)
+          // Owner team claim in lobby (claim an unowned team)
+          || (resource.data.status == 'lobby'
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['teams', 'updatedAt', 'auctionLog']))
+          // Owner bid transaction during active auction
+          || (resource.data.status == 'auction'
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['currentLot', 'auctionLog', 'updatedAt', 'lastBidAction']))
+        );
+
+      allow delete: if false;
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

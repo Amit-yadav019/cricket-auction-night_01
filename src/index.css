@@ -1,0 +1,142 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-display: 'Barlow Condensed', sans-serif;
+    --font-body: 'Barlow', sans-serif;
+
+    /* Light mode */
+    --color-primary: #1B5E3B;
+    --color-primary-hover: #154c30;
+    --color-primary-light: #e8f5e9;
+    --color-primary-text: #ffffff;
+
+    --color-accent: #C23B22;
+    --color-accent-hover: #a5301a;
+    --color-accent-light: #fde8e5;
+    --color-accent-text: #ffffff;
+
+    --color-bg: #f4f6f4;
+    --color-surface: #ffffff;
+    --color-surface-elevated: #ffffff;
+    --color-surface-subtle: #edf2ed;
+    --color-border: #d7e0d7;
+
+    --color-text-main: #132219;
+    --color-text-muted: #536457;
+    --color-text-dim: #7f9184;
+
+    --stamp-sold: #C23B22;
+    --stamp-unsold: #536457;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      /* Dark mode */
+      --color-primary: #3FBF82;
+      --color-primary-hover: #32a76f;
+      --color-primary-light: #103322;
+      --color-primary-text: #0a1f14;
+
+      --color-accent: #FF7A5C;
+      --color-accent-hover: #e56548;
+      --color-accent-light: #3d1b14;
+      --color-accent-text: #1a0805;
+
+      --color-bg: #0d1611;
+      --color-surface: #14221a;
+      --color-surface-elevated: #1b2e23;
+      --color-surface-subtle: #18281f;
+      --color-border: #233b2e;
+
+      --color-text-main: #f0f7f2;
+      --color-text-muted: #9eb5a5;
+      --color-text-dim: #6d8274;
+
+      --stamp-sold: #FF7A5C;
+      --stamp-unsold: #9eb5a5;
+    }
+  }
+
+  body {
+    font-family: var(--font-body);
+    background-color: var(--color-bg);
+    color: var(--color-text-main);
+    margin: 0;
+    padding: 0;
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  h1, h2, h3, .font-display, .scoreboard-num {
+    font-family: var(--font-display);
+    text-transform: uppercase;
+    letter-spacing: 0.025em;
+  }
+}
+
+/* Rubber Stamp Slam & Screen Shake Animations */
+@keyframes stamp-pop {
+  0% {
+    transform: scale(2.8) rotate(-18deg);
+    opacity: 0;
+  }
+  65% {
+    transform: scale(0.92) rotate(-9deg);
+    opacity: 1;
+  }
+  85% {
+    transform: scale(1.05) rotate(-8deg);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1) rotate(-8deg);
+    opacity: 1;
+  }
+}
+
+@keyframes screen-shake {
+  0%, 100% { transform: translate(0, 0); }
+  20% { transform: translate(-3px, 3px); }
+  40% { transform: translate(3px, -2px); }
+  60% { transform: translate(-2px, 1px); }
+  80% { transform: translate(1px, -1px); }
+}
+
+@keyframes war-pulse {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4);
+  }
+  50% {
+    transform: scale(1.03);
+    box-shadow: 0 0 15px 4px rgba(239, 68, 68, 0.6);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stamp-animate, .screen-shake, .war-pulse {
+    animation: none !important;
+  }
+}
+
+.stamp-animate {
+  animation: stamp-pop 0.35s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+}
+
+.shake-active {
+  animation: screen-shake 0.35s ease-in-out;
+}
+
+.bidding-war-pulse {
+  animation: war-pulse 1.2s infinite ease-in-out;
+}
+
+/* Authentic Rubber Stamp Borders & Ink Mask */
+.rubber-stamp {
+  border: 4px dashed currentColor;
+  box-shadow: inset 0 0 0 3px rgba(0,0,0,0.06), 0 0 0 3px currentColor;
+  text-shadow: 0 0 1px currentColor;
+  letter-spacing: 0.15em;
+}

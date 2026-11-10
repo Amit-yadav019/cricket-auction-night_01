@@ -1,0 +1,6 @@
+{
+  "name": "Cricket Auction Night",
+  "description": "Mobile-first real-time multiplayer cricket player auction web app with Firestore transactions, live bids, team paddles, and owner controls.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

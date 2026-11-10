@@ -1,0 +1,33 @@
+{
+  "entities": {
+    "Room": {
+      "title": "Room",
+      "description": "Cricket Auction Room containing auction state, teams, players, and bids",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "5-character room code" },
+        "code": { "type": "string", "description": "5-character room code" },
+        "hostToken": { "type": "string", "description": "Secret token verifying host authority" },
+        "hostHeartbeat": { "type": "number", "description": "Host heartbeat timestamp in ms" },
+        "status": { "type": "string", "enum": ["lobby", "auction", "round_ended", "completed"] },
+        "settings": { "type": "object", "description": "Auction configuration settings" },
+        "round": { "type": "number", "description": "Auction round number" },
+        "teams": { "type": "array", "description": "List of teams, claims, purses and rosters" },
+        "allPlayers": { "type": "array", "description": "Ordered player pool for auction" },
+        "activePlayerIndex": { "type": "number", "description": "Index of current player in allPlayers" },
+        "currentLot": { "type": "object", "description": "Current player up for bidding" },
+        "lastResult": { "type": "object", "description": "Last auction result stamp (SOLD/UNSOLD)" },
+        "auctionLog": { "type": "array", "description": "Recent auction event logs" },
+        "createdAt": { "type": "number", "description": "Room creation timestamp" },
+        "updatedAt": { "type": "number", "description": "Last update timestamp" }
+      },
+      "required": ["id", "code", "hostToken", "status", "teams"]
+    }
+  },
+  "firestore": {
+    "/rooms/{roomId}": {
+      "schema": "Room",
+      "description": "Auction room documents indexed by 5-character room code"
+    }
+  }
+}
