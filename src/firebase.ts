@@ -3,7 +3,7 @@ import { getAuth, signInAnonymously, onAuthStateChanged, User } from 'firebase/a
 import { getFirestore, doc, getDocFromServer, Firestore } from 'firebase/firestore';
 
 export const firebaseConfig = {
-  apiKey: "AIzaSyBWrly8D_Cm9b30skGQ6ygez7Xy9ae8nNk",
+  apiKey: "AIzaSyCAsczRk42x-_m1rjxcde2YIE3YrdpycUY",
   authDomain: "cricket-auction-night-a702f.firebaseapp.com",
   projectId: "cricket-auction-night-a702f",
   storageBucket: "cricket-auction-night-a702f.firebasestorage.app",
