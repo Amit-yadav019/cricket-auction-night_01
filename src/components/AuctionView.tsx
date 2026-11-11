@@ -63,13 +63,17 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
   const [selectedMultiplier, setSelectedMultiplier] = useState<number>(1);
 
   // Host selected paddle team (for host bidding on behalf of teams)
+  const teamsList: Team[] = Array.isArray(room?.teams)
+    ? (room.teams as Team[])
+    : Object.values(room?.teams || {});
+
   const [hostPaddleTeamId, setHostPaddleTeamId] = useState<string>(
-    room.teams?.[0]?.id || ''
+    teamsList[0]?.id || ''
   );
 
   // Track stamp visibility for 2.5s
   const [showStamp, setShowStamp] = useState(false);
-  const [lastStampResult, setLastStampResult] = useState(room.lastResult);
+  const [lastStampResult, setLastStampResult] = useState(room?.lastResult);
   const [isScreenShaking, setIsScreenShaking] = useState(false);
 
   // Voice narration toggle
@@ -83,17 +87,17 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
 
   useEffect(() => {
     const checkHeartbeat = () => {
-      const diff = Date.now() - (room.hostHeartbeat || 0);
+      const diff = Date.now() - (room?.hostHeartbeat || 0);
       setIsHostOffline(diff > 25000);
     };
     checkHeartbeat();
     const interval = setInterval(checkHeartbeat, 5000);
     return () => clearInterval(interval);
-  }, [room.hostHeartbeat]);
+  }, [room?.hostHeartbeat]);
 
   // Stamp animation trigger when lastResult changes
   useEffect(() => {
-    if (room.lastResult && room.lastResult.timestamp !== lastStampResult?.timestamp) {
+    if (room?.lastResult && room.lastResult.timestamp !== lastStampResult?.timestamp) {
       setLastStampResult(room.lastResult);
       setShowStamp(true);
       setIsScreenShaking(true);
@@ -115,15 +119,15 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
       const timer = setTimeout(() => setShowStamp(false), 2600);
       return () => clearTimeout(timer);
     }
-  }, [room.lastResult, soundEnabled, voiceNarration, lastStampResult?.timestamp, room.settings?.purseUnit]);
+  }, [room?.lastResult, soundEnabled, voiceNarration, lastStampResult?.timestamp, room?.settings?.purseUnit]);
 
   // Detect outbid and bid audio cues
   useEffect(() => {
-    if (!room.currentLot) return;
+    if (!room?.currentLot) return;
     const bids = room.currentLot.bidHistory || [];
     if (bids.length > prevBidCountRef.current) {
       const latest = bids[0];
-      const myTeam = (room.teams || []).find((t) => t.ownerToken === ownerToken);
+      const myTeam = teamsList.find((t) => t.ownerToken === ownerToken);
 
       if (
         myTeam &&
@@ -137,26 +141,26 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
     }
     prevBidCountRef.current = bids.length;
     prevLeadingTeamIdRef.current = room.currentLot.leadingTeamId || null;
-  }, [room.currentLot?.bidHistory?.length, room.currentLot?.leadingTeamId, ownerToken, soundEnabled]);
+  }, [room?.currentLot?.bidHistory?.length, room?.currentLot?.leadingTeamId, ownerToken, soundEnabled, teamsList]);
 
-  const lot = room.currentLot;
+  const lot = room?.currentLot;
   const currentBid = lot?.currentBid ?? null;
   const isFirstBid = currentBid === null;
 
   // Determine active bidding team
-  const myClaimedTeam = (room.teams || []).find((t) => t.ownerToken === ownerToken);
+  const myClaimedTeam = teamsList.find((t) => t.ownerToken === ownerToken);
   const activeBiddingTeam = isHost
-    ? (room.teams || []).find((t) => t.id === hostPaddleTeamId) || myClaimedTeam || room.teams?.[0]
+    ? teamsList.find((t) => t.id === hostPaddleTeamId) || myClaimedTeam || teamsList[0]
     : myClaimedTeam;
 
   const teamPlayerCount = activeBiddingTeam ? (activeBiddingTeam.players?.length || 0) : 0;
   const teamPurse = activeBiddingTeam ? activeBiddingTeam.purse : 0;
 
-  const maxSquad = room.settings?.maxSquadSize || room.settings?.squadSize || 25;
-  const minSquad = room.settings?.minSquadSize || maxSquad;
+  const maxSquad = room?.settings?.maxSquadSize || room?.settings?.squadSize || 25;
+  const minSquad = room?.settings?.minSquadSize || maxSquad;
   const slotsLeft = maxSquad - teamPlayerCount;
 
-  // Adapter for calculateMaxBid (which expects a Team object)
+  // Adapter for calculateMaxBid (expects a Team object and maxSquadSize)
   const maxAllowedBid = activeBiddingTeam
     ? calculateMaxBid(
         {
@@ -171,21 +175,21 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
       )
     : 0;
 
-  // Valid next bids (returns number[])
-  const validNextBids: number[] = lot
+  // Valid next bids
+  const validNextBids: number[] = lot?.player
     ? getValidNextBids(currentBid || 0, lot.player.basePrice, 3)
     : [];
 
   // Calculate proposed bid amount
   let proposedBidAmount = 0;
   if (isFirstBid) {
-    proposedBidAmount = lot?.player.basePrice || 0;
+    proposedBidAmount = lot?.player?.basePrice || 0.5;
   } else {
-    const step = room.settings?.bidStep || 0.5;
+    const step = room?.settings?.bidStep || 0.5;
     proposedBidAmount = Number(((currentBid || 0) + selectedMultiplier * step).toFixed(2));
   }
 
-  // Reason why active bidding team cannot bid
+  // Determine reason why active bidding team cannot bid
   let bidDisabledReason = '';
   if (!lot) {
     bidDisabledReason = 'No active lot';
@@ -207,12 +211,22 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
 
   // Handle owner or host placing a bid
   const handlePlaceBid = async (overrideTeamId?: string, overrideAmount?: number, overrideMult?: number) => {
-    if (!lot) return;
+    if (!lot || !lot.player) return;
+
     const targetTeam = overrideTeamId
-      ? (room.teams || []).find((t) => t.id === overrideTeamId)
+      ? teamsList.find((t) => t.id === overrideTeamId)
       : activeBiddingTeam;
 
-    if (!targetTeam) return;
+    if (!targetTeam || !targetTeam.id) {
+      setBiddingError('Please select a team before placing a bid');
+      return;
+    }
+
+    const roomIdentifier = room?.code || (room as any)?.roomCode;
+    if (!roomIdentifier) {
+      setBiddingError('Room code not found');
+      return;
+    }
 
     const amount = overrideAmount ?? proposedBidAmount;
     const mult = overrideMult ?? (isFirstBid ? 0 : selectedMultiplier);
@@ -220,77 +234,112 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
     setBidding(true);
     setBiddingError('');
 
-    const res = await placeBidTransaction(
-      room.code,
-      targetTeam.id,
-      amount,
-      mult,
-      lot.currentBid,
-      lot.player.id,
-      isHost ? hostToken : undefined
-    );
+    try {
+      const res = await placeBidTransaction(
+        roomIdentifier,
+        targetTeam.id,
+        amount,
+        mult,
+        lot.currentBid ?? null,
+        lot.player.id,
+        isHost ? hostToken : undefined
+      );
 
-    setBidding(false);
-    if (!res.success) {
-      setBiddingError(res.error || 'Failed to place bid');
+      if (!res?.success) {
+        setBiddingError(res?.error || 'Failed to place bid');
+      }
+    } catch (err: any) {
+      setBiddingError(err?.message || 'Bidding transaction failed');
+    } finally {
+      setBidding(false);
     }
   };
 
   // Host action: Sold
   const handleHostSold = async () => {
-    if (!isHost || hostActionLoading) return;
+    const roomIdentifier = room?.code || (room as any)?.roomCode;
+    if (!isHost || hostActionLoading || !roomIdentifier) return;
     setHostActionLoading(true);
-    const res = await markSoldTransaction(room.code, hostToken);
-    setHostActionLoading(false);
-    if (!res.success) {
-      setBiddingError(res.error || 'Failed to mark sold');
+    try {
+      const res = await markSoldTransaction(roomIdentifier, hostToken);
+      if (!res?.success) {
+        setBiddingError(res?.error || 'Failed to mark sold');
+      }
+    } catch (err: any) {
+      setBiddingError(err?.message || 'Transaction failed');
+    } finally {
+      setHostActionLoading(false);
     }
   };
 
   // Host action: Unsold
   const handleHostUnsold = async () => {
-    if (!isHost || hostActionLoading) return;
+    const roomIdentifier = room?.code || (room as any)?.roomCode;
+    if (!isHost || hostActionLoading || !roomIdentifier) return;
     setHostActionLoading(true);
-    const res = await markUnsoldTransaction(room.code, hostToken);
-    setHostActionLoading(false);
-    if (!res.success) {
-      setBiddingError(res.error || 'Failed to mark unsold');
+    try {
+      const res = await markUnsoldTransaction(roomIdentifier, hostToken);
+      if (!res?.success) {
+        setBiddingError(res?.error || 'Failed to mark unsold');
+      }
+    } catch (err: any) {
+      setBiddingError(err?.message || 'Transaction failed');
+    } finally {
+      setHostActionLoading(false);
     }
   };
 
   // Host action: Undo
   const handleHostUndo = async () => {
-    if (!isHost || hostActionLoading) return;
+    const roomIdentifier = room?.code || (room as any)?.roomCode;
+    if (!isHost || hostActionLoading || !roomIdentifier) return;
     setHostActionLoading(true);
-    const res = await undoLastBidTransaction(room.code, hostToken);
-    setHostActionLoading(false);
-    if (!res.success) {
-      setBiddingError(res.error || 'Failed to undo bid');
-    } else {
-      if (soundEnabled) playUndoSound();
+    try {
+      const res = await undoLastBidTransaction(roomIdentifier, hostToken);
+      if (!res?.success) {
+        setBiddingError(res?.error || 'Failed to undo bid');
+      } else {
+        if (soundEnabled) playUndoSound();
+      }
+    } catch (err: any) {
+      setBiddingError(err?.message || 'Transaction failed');
+    } finally {
+      setHostActionLoading(false);
     }
   };
 
   // Host action: Re-auction
   const handleHostReAuction = async () => {
-    if (!isHost || hostActionLoading) return;
+    const roomIdentifier = room?.code || (room as any)?.roomCode;
+    if (!isHost || hostActionLoading || !roomIdentifier) return;
     setHostActionLoading(true);
-    const res = await reAuctionUnsoldTransaction(room.code, hostToken);
-    setHostActionLoading(false);
-    if (!res.success) {
-      setBiddingError(res.error || 'Failed to re-auction');
+    try {
+      const res = await reAuctionUnsoldTransaction(roomIdentifier, hostToken);
+      if (!res?.success) {
+        setBiddingError(res?.error || 'Failed to re-auction');
+      }
+    } catch (err: any) {
+      setBiddingError(err?.message || 'Transaction failed');
+    } finally {
+      setHostActionLoading(false);
     }
   };
 
   // Host action: End Auction
   const handleHostEndAuction = async () => {
-    if (!isHost || hostActionLoading) return;
+    const roomIdentifier = room?.code || (room as any)?.roomCode;
+    if (!isHost || hostActionLoading || !roomIdentifier) return;
     if (!confirm('Conclude the auction and view final squad summaries?')) return;
     setHostActionLoading(true);
-    const res = await endAuctionTransaction(room.code, hostToken);
-    setHostActionLoading(false);
-    if (!res.success) {
-      setBiddingError(res.error || 'Failed to end auction');
+    try {
+      const res = await endAuctionTransaction(roomIdentifier, hostToken);
+      if (!res?.success) {
+        setBiddingError(res?.error || 'Failed to end auction');
+      }
+    } catch (err: any) {
+      setBiddingError(err?.message || 'Transaction failed');
+    } finally {
+      setHostActionLoading(false);
     }
   };
 
@@ -308,7 +357,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
   };
 
   // Round ended screen
-  if (room.status === 'round_ended') {
+  if (room?.status === 'round_ended') {
     const unsoldPlayers = (room.allPlayers || []).filter((p) => p.status === 'unsold');
     return (
       <div className="w-full max-w-[540px] mx-auto px-4 py-8 text-center space-y-6">
@@ -373,7 +422,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
         </div>
       )}
 
-      {/* Tabs */}
+      {/* Navigation Tabs */}
       <div className="grid grid-cols-4 gap-1 bg-[var(--color-surface-subtle)] p-1 rounded-xl border border-[var(--color-border)]">
         <button
           onClick={() => setActiveTab('auction')}
@@ -414,9 +463,14 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
         </button>
       </div>
 
+      {/* Dismissible Error Banner */}
       {biddingError && (
-        <div className="p-2.5 bg-amber-50 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-700 rounded-xl text-center text-xs font-bold text-amber-900 dark:text-amber-100 animate-bounce">
-          {biddingError}
+        <div
+          onClick={() => setBiddingError('')}
+          className="p-2.5 bg-amber-50 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-700 rounded-xl text-center text-xs font-bold text-amber-900 dark:text-amber-100 transition hover:opacity-85 cursor-pointer shadow-xs"
+          title="Click to dismiss"
+        >
+          {biddingError} <span className="text-[10px] opacity-70 underline ml-1">(tap to dismiss)</span>
         </div>
       )}
 
@@ -446,7 +500,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
               {lot.player.role}
             </span>
             <span className="text-xs font-bold text-[var(--color-text-dim)] font-mono">
-              Base: ₹{lot.player.basePrice} {room.settings?.purseUnit || 'Cr'}
+              Base: ₹{lot.player.basePrice} {room?.settings?.purseUnit || 'Cr'}
             </span>
           </div>
 
@@ -469,7 +523,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
             </div>
             <div className="text-4xl sm:text-5xl font-black font-display tracking-tight text-[var(--color-accent)] scoreboard-num mt-0.5">
               ₹{lot.currentBid !== null ? lot.currentBid : lot.player.basePrice}{' '}
-              <span className="text-2xl font-bold">{room.settings?.purseUnit || 'Cr'}</span>
+              <span className="text-2xl font-bold">{room?.settings?.purseUnit || 'Cr'}</span>
             </div>
           </div>
 
@@ -487,7 +541,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
             )}
           </div>
 
-          {/* Voice Narration Toggle */}
+          {/* Voice Narration Button */}
           <div className="mt-3 flex justify-end">
             <button
               type="button"
@@ -586,7 +640,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
               </div>
               <div className="grid grid-cols-3 gap-2">
                 {[1, 2, 4].map((mult) => {
-                  const step = room.settings?.bidStep || 0.5;
+                  const step = room?.settings?.bidStep || 0.5;
                   const targetAmount = Number(((currentBid || 0) + mult * step).toFixed(2));
                   const canAffordThis = targetAmount <= maxAllowedBid && targetAmount <= teamPurse;
                   const isSelected = selectedMultiplier === mult;
@@ -632,7 +686,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
               <>
                 <Gavel className="w-5 h-5 fill-current transform -rotate-12" />
                 <span>
-                  BID ₹{proposedBidAmount} {room.settings?.purseUnit || 'Cr'}
+                  BID ₹{proposedBidAmount} {room?.settings?.purseUnit || 'Cr'}
                 </span>
               </>
             ) : (
@@ -660,8 +714,8 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
               Tap a Paddle to Bid For That Team:
             </span>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 max-h-36 overflow-y-auto">
-              {(room.teams || []).map((t) => {
-                const tMaxSquad = room.settings?.maxSquadSize || room.settings?.squadSize || 25;
+              {teamsList.map((t) => {
+                const tMaxSquad = room?.settings?.maxSquadSize || room?.settings?.squadSize || 25;
                 const tPlayerCount = t.players?.length || 0;
                 const tSlots = tMaxSquad - tPlayerCount;
                 const tMaxBid = calculateMaxBid(
@@ -676,10 +730,10 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
                   tMaxSquad
                 );
 
-                const step = room.settings?.bidStep || 0.5;
+                const step = room?.settings?.bidStep || 0.5;
                 const nextStepAmount = Number(
                   (isFirstBid
-                    ? lot?.player.basePrice || 0
+                    ? lot?.player?.basePrice || 0.5
                     : (currentBid || 0) + step
                   ).toFixed(2)
                 );
