@@ -36,7 +36,7 @@ import { sound } from '../services/soundService';
 import { generateMasterScoutReport, MasterScoutReport } from '../services/aiService';
 
 interface CompletedViewProps {
-  room: RoomData;
+  room: RoomData | null;
   isHost: boolean;
   hostToken: string;
   onOpenSummary?: () => void;
@@ -56,6 +56,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
   const [expandedTeamId, setExpandedTeamId] = useState<string | null>(null);
   const [hasInitializedLineup, setHasInitializedLineup] = useState(false);
 
+  // Safe guarded properties
   const teamsList: Team[] = Array.isArray(room?.teams) ? room.teams : [];
   const minSquad = room?.settings?.minSquadSize || room?.settings?.squadSize || 11;
   const targetPlayingCount = minSquad;
@@ -63,13 +64,16 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
   const existingLineups = (room as any)?.lineups || {};
   const masterReport: MasterScoutReport | null = (room as any)?.masterScoutReport || null;
 
-  const storedOwnerToken = localStorage.getItem(`cricket_owner_token_${room.code}`) || '';
+  const roomCode = room?.code || '';
+  const storedOwnerToken = roomCode
+    ? localStorage.getItem(`cricket_owner_token_${roomCode}`) || ''
+    : '';
   const myTeam = teamsList.find((t) => t.ownerToken && t.ownerToken === storedOwnerToken);
 
   const [selectedPlayingIds, setSelectedPlayingIds] = useState<string[]>([]);
 
-  // Compute unsold players count across the entire pool
-  const allPoolPlayers: Player[] = room.playerPool || room.allPlayers || [];
+  // Safely guard against null room
+  const allPoolPlayers: Player[] = room?.playerPool || room?.allPlayers || [];
   const unsoldPlayers = allPoolPlayers.filter((p: Player) => p.status === 'unsold');
 
   // Confetti and fanfare trigger
@@ -128,7 +132,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
   };
 
   const handleSaveLineup = async () => {
-    if (!myTeam || !myTeam.players) return;
+    if (!room?.code || !myTeam || !myTeam.players) return;
     if (selectedPlayingIds.length !== targetPlayingCount && myTeam.players.length >= targetPlayingCount) {
       alert(`Please select exactly ${targetPlayingCount} players for your Starting Lineup.`);
       return;
@@ -152,6 +156,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
   };
 
   const handleGenerateScoutReport = async () => {
+    if (!room?.code) return;
     setAnalyzing(true);
     try {
       const report = await generateMasterScoutReport(teamsList, existingLineups, minSquad);
@@ -164,7 +169,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
   };
 
   const handleReAuctionUnsold = async () => {
-    if (!isHost) return;
+    if (!isHost || !room?.code) return;
     if (unsoldPlayers.length === 0) {
       alert('There are no unsold players left to re-auction.');
       return;
@@ -185,7 +190,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
   };
 
   const handleResetAuction = async () => {
-    if (!isHost) return;
+    if (!isHost || !room?.code) return;
     if (confirm('Start a brand new auction? This resets budgets and squad rosters back to lobby while keeping team claims intact.')) {
       setResetting(true);
       await resetAuctionTransaction(room.code, hostToken);
@@ -311,7 +316,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
                 {unsoldPlayers.length} Unsold Player{unsoldPlayers.length > 1 ? 's' : ''} Remaining
               </h3>
               <p className="text-[11px] text-[var(--color-text-muted)] mt-0.5">
-                The Host can trigger Round {(room.round || 1) + 1} to re-auction unsold players.
+                The Host can trigger Round {(room?.round || 1) + 1} to re-auction unsold players.
               </p>
             </div>
           </div>
@@ -337,7 +342,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
               <span>Record Hammer Acquisition</span>
             </div>
             <span className="text-xs font-black text-amber-600 dark:text-amber-400 font-mono tracking-tight">
-              ₹{biggestBuy.price} {room.settings?.purseUnit || 'Cr'}
+              ₹{biggestBuy.price} {room?.settings?.purseUnit || 'Cr'}
             </span>
           </div>
 
@@ -776,7 +781,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
                 <span className="text-[9px] text-[var(--color-text-dim)] uppercase block font-bold">Spent / Remaining</span>
                 <span className="text-xs font-mono font-bold text-[var(--color-text-main)]">
                   <span className="text-amber-500">₹{team.spent}</span> /{' '}
-                  <span className="text-emerald-500">₹{team.purse} {room.settings?.purseUnit || 'Cr'}</span>
+                  <span className="text-emerald-500">₹{team.purse} {room?.settings?.purseUnit || 'Cr'}</span>
                 </span>
               </div>
             </div>
@@ -842,7 +847,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
 
           <p className="text-[10px] text-[var(--color-text-dim)]">
             {unsoldPlayers.length > 0
-              ? `Re-auction starts Round ${(room.round || 1) + 1} with unsold players while preserving all existing squads & remaining purses.`
+              ? `Re-auction starts Round ${(room?.round || 1) + 1} with unsold players while preserving all existing squads & remaining purses.`
               : 'Clears all purses and rosters back to lobby while preserving team claims.'}
           </p>
         </div>
