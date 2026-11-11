@@ -9,6 +9,7 @@ import {
   RefreshCw,
   Volume2,
   VolumeX,
+  Award,
 } from 'lucide-react';
 import {
   RoomData,
@@ -21,7 +22,6 @@ import {
 } from '../services/auctionService';
 import {
   calculateMaxBid,
-  getValidNextBids,
   PlayerRole,
   Team,
 } from '../game/auctionRules';
@@ -159,6 +159,11 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
   const maxSquad = room?.settings?.maxSquadSize || room?.settings?.squadSize || 25;
   const minSquad = room?.settings?.minSquadSize || maxSquad;
   const slotsLeft = maxSquad - teamPlayerCount;
+
+  // Check if every team has fulfilled minimum squad requirement
+  const allTeamsMetMin =
+    teamsList.length > 0 &&
+    teamsList.every((t) => (t.players?.length || 0) >= minSquad);
 
   // Max bid calculation using proper team object
   const maxAllowedBid = activeBiddingTeam
@@ -726,6 +731,30 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
               Host Authority
             </span>
           </div>
+
+          {/* SQUAD REQUIREMENT FULFILLED BANNER: Appears ONLY when all teams have met minimum required players */}
+          {allTeamsMetMin && (
+            <div className="p-3 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-400 dark:border-emerald-700 rounded-xl space-y-2">
+              <div className="flex items-center space-x-2 text-emerald-800 dark:text-emerald-200">
+                <Award className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+                <span className="text-xs font-bold font-display uppercase tracking-wide">
+                  All Squad Targets Met ({minSquad}+ Players Each)!
+                </span>
+              </div>
+              <p className="text-[11px] text-emerald-700 dark:text-emerald-300">
+                Every team has reached the required roster size. You can conclude the auction now instead of cycling through remaining players.
+              </p>
+              <button
+                type="button"
+                disabled={hostActionLoading}
+                onClick={handleHostEndAuction}
+                className="w-full min-h-[40px] py-2 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-display text-xs font-bold uppercase tracking-wider transition active:scale-[0.98] cursor-pointer flex items-center justify-center space-x-1.5 shadow-sm"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>Finish Auction Early</span>
+              </button>
+            </div>
+          )}
 
           <div>
             <span className="block text-[10px] font-bold text-[var(--color-text-dim)] uppercase tracking-wider mb-1.5">
