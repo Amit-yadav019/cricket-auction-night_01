@@ -22,6 +22,9 @@ import {
   BarChart3,
   Award,
   PlayCircle,
+  Repeat,
+  X,
+  Send,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import {
@@ -30,6 +33,9 @@ import {
   submitTeamLineupTransaction,
   saveMasterScoutReport,
   reAuctionUnsoldTransaction,
+  proposeTradeTransaction,
+  respondTradeTransaction,
+  TradeProposal,
 } from '../services/auctionService';
 import { PlayerRole, Team, Player } from '../game/auctionRules';
 import { sound } from '../services/soundService';
@@ -56,7 +62,14 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
   const [expandedTeamId, setExpandedTeamId] = useState<string | null>(null);
   const [hasInitializedLineup, setHasInitializedLineup] = useState(false);
 
-  // Safe guarded properties
+  // Trade Window States
+  const [isTradeModalOpen, setIsTradeModalOpen] = useState(false);
+  const [myPlayerToOffer, setMyPlayerToOffer] = useState<Player | null>(null);
+  const [targetTeamId, setTargetTeamId] = useState<string>('');
+  const [targetPlayerToAsk, setTargetPlayerToAsk] = useState<Player | null>(null);
+  const [isProposingTrade, setIsProposingTrade] = useState(false);
+  const [tradeActionLoading, setTradeActionLoading] = useState<string | null>(null);
+
   const teamsList: Team[] = Array.isArray(room?.teams) ? room.teams : [];
   const minSquad = room?.settings?.minSquadSize || room?.settings?.squadSize || 11;
   const targetPlayingCount = minSquad;
@@ -72,9 +85,22 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
 
   const [selectedPlayingIds, setSelectedPlayingIds] = useState<string[]>([]);
 
-  // Safely guard against null room
   const allPoolPlayers: Player[] = room?.playerPool || room?.allPlayers || [];
   const unsoldPlayers = allPoolPlayers.filter((p: Player) => p.status === 'unsold');
+
+  // Active trades in this room
+  const allTrades: Record<string, TradeProposal> = (room as any)?.trades || {};
+  const activePendingTrades = Object.values(allTrades).filter((t) => t.status === 'pending');
+
+  // Trade proposals targeting my team
+  const incomingTrades = activePendingTrades.filter(
+    (t) => myTeam && t.receiverTeamId === myTeam.id
+  );
+
+  // Trade proposals sent by my team
+  const outgoingTrades = activePendingTrades.filter(
+    (t) => myTeam && t.senderTeamId === myTeam.id
+  );
 
   // Confetti and fanfare trigger
   useEffect(() => {
@@ -86,21 +112,21 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
       });
       sound.playFanfare();
     } catch {
-      // Fallback if canvas is not supported
+      // Fallback
     }
   }, []);
 
-  // Stable initialization: prevents re-overwriting selection state during re-renders
+  // Stable initialization: sync lineup selection without infinite re-renders
   useEffect(() => {
-    if (!myTeam || !myTeam.players || hasInitializedLineup) return;
+    if (!myTeam || !myTeam.players) return;
 
     const savedForMyTeam = existingLineups[myTeam.id];
     if (savedForMyTeam?.playingIds && savedForMyTeam.playingIds.length > 0) {
       setSelectedPlayingIds(savedForMyTeam.playingIds);
-    } else {
+    } else if (!hasInitializedLineup) {
       setSelectedPlayingIds(myTeam.players.slice(0, targetPlayingCount).map((p) => p.id));
+      setHasInitializedLineup(true);
     }
-    setHasInitializedLineup(true);
   }, [myTeam?.id, myTeam?.players, existingLineups, hasInitializedLineup, targetPlayingCount]);
 
   // Default expand champion when scout report resolves
@@ -114,18 +140,12 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
   const handlePlayerTap = (playerId: string) => {
     setSelectedPlayingIds((prev) => {
       const isAlreadyPlaying = prev.includes(playerId);
-
-      // If starter is tapped -> demote to bench
       if (isAlreadyPlaying) {
         return prev.filter((id) => id !== playerId);
       }
-
-      // If bench player is tapped and room exists -> add directly
       if (prev.length < targetPlayingCount) {
         return [...prev, playerId];
       }
-
-      // If bench player is tapped and starting XI is full -> replace the first starting player instantly
       const [, ...remainingStarters] = prev;
       return [...remainingStarters, playerId];
     });
@@ -152,6 +172,49 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
       setTimeout(() => setLineupSuccessMsg(''), 4500);
     } else {
       alert(res.error || 'Failed to submit lineup');
+    }
+  };
+
+  // Trade submission handler
+  const handleSendTradeProposal = async () => {
+    if (!room?.code || !myTeam || !myPlayerToOffer || !targetTeamId || !targetPlayerToAsk) {
+      alert('Please select both a player to offer and a player to request.');
+      return;
+    }
+
+    const targetTeam = teamsList.find((t) => t.id === targetTeamId);
+    if (!targetTeam) return;
+
+    setIsProposingTrade(true);
+    const res = await proposeTradeTransaction(
+      room.code,
+      myTeam,
+      myPlayerToOffer,
+      targetTeam,
+      targetPlayerToAsk
+    );
+    setIsProposingTrade(false);
+
+    if (res.success) {
+      setIsTradeModalOpen(false);
+      setMyPlayerToOffer(null);
+      setTargetPlayerToAsk(null);
+      setTargetTeamId('');
+      alert(`Trade offer sent to ${targetTeam.name}! Waiting for their acceptance.`);
+    } else {
+      alert(res.error || 'Failed to send trade proposal.');
+    }
+  };
+
+  // Trade response handler (Accept or Decline)
+  const handleRespondToTrade = async (tradeId: string, accept: boolean) => {
+    if (!room?.code) return;
+    setTradeActionLoading(tradeId);
+    const res = await respondTradeTransaction(room.code, tradeId, accept);
+    setTradeActionLoading(null);
+
+    if (!res.success) {
+      alert(res.error || 'Failed to process trade.');
     }
   };
 
@@ -198,18 +261,6 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
     }
   };
 
-  // Compute tournament-wide biggest buy
-  const allSoldPlayers: { player: any; teamName: string; price: number }[] = [];
-  for (const t of teamsList) {
-    for (const p of t.players || []) {
-      if (p.soldPrice) {
-        allSoldPlayers.push({ player: p, teamName: t.name, price: p.soldPrice });
-      }
-    }
-  }
-  allSoldPlayers.sort((a, b) => b.price - a.price);
-  const biggestBuy = allSoldPlayers[0] || null;
-
   const getRoleBadgeStyle = (role: PlayerRole) => {
     switch (role) {
       case 'BAT':
@@ -230,7 +281,6 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
     return 'text-rose-500 border-rose-500/40 bg-rose-500/10';
   };
 
-  // Dynamic ranking badges from 1 to N
   const renderRankPlate = (rank: number) => {
     if (rank === 1) {
       return (
@@ -260,7 +310,6 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
     );
   };
 
-  // Lineup role counters for Owner Studio HUD
   const myPlayingPlayers = (myTeam?.players || []).filter((p) => selectedPlayingIds.includes(p.id));
   const myBenchPlayers = (myTeam?.players || []).filter((p) => !selectedPlayingIds.includes(p.id));
   const myWkCount = myPlayingPlayers.filter((p) => p.role === 'WK').length;
@@ -269,7 +318,8 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
   const myBowlCount = myPlayingPlayers.filter((p) => p.role === 'BOWL').length;
   const myTotalBowlers = myBowlCount + myArCount;
 
-  const submittedCount = teamsList.filter((t) => existingLineups[t.id]?.playingIds?.length > 0).length;
+  const otherTeams = teamsList.filter((t) => myTeam && t.id !== myTeam.id);
+  const selectedOtherTeam = teamsList.find((t) => t.id === targetTeamId);
 
   return (
     <div className="w-full max-w-[620px] mx-auto px-3.5 sm:px-4 py-6 space-y-6 transition-all duration-300">
@@ -288,7 +338,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
           Auction Concluded
         </h1>
         <p className="text-xs text-[var(--color-text-muted)] max-w-sm mx-auto mt-1.5 leading-relaxed">
-          Franchise budgets are locked. Review squad depths, configure starting lineups, and inspect prime-form power rankings.
+          Franchise budgets are locked. Trade players with mutual acceptance, lock starting lineups, and inspect prime rankings.
         </p>
 
         {onOpenSummary && (
@@ -304,67 +354,102 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
         )}
       </div>
 
-      {/* UNSOLD PLAYERS NOTICE (ROUND 2 AVAILABILITY) */}
-      {unsoldPlayers.length > 0 && (
-        <div className="relative overflow-hidden bg-gradient-to-r from-amber-500/10 via-[var(--color-surface-subtle)] to-[var(--color-surface-subtle)] border border-amber-500/40 rounded-3xl p-4.5 shadow-sm flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 rounded-2xl bg-amber-500/20 text-amber-500 flex items-center justify-center flex-shrink-0">
-              <PlayCircle className="w-5 h-5" />
-            </div>
-            <div>
-              <h3 className="text-sm font-black font-display uppercase text-[var(--color-text-main)]">
-                {unsoldPlayers.length} Unsold Player{unsoldPlayers.length > 1 ? 's' : ''} Remaining
-              </h3>
-              <p className="text-[11px] text-[var(--color-text-muted)] mt-0.5">
-                The Host can trigger Round {(room?.round || 1) + 1} to re-auction unsold players.
-              </p>
-            </div>
-          </div>
-          {isHost && (
-            <button
-              type="button"
-              disabled={reAuctioning}
-              onClick={handleReAuctionUnsold}
-              className="text-[11px] font-black font-display uppercase tracking-wider px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-stone-950 transition cursor-pointer shadow-sm active:scale-95 flex-shrink-0"
+      {/* INCOMING TRADE PROPOSALS (ALERT BANNER) */}
+      {incomingTrades.length > 0 && (
+        <div className="space-y-3">
+          {incomingTrades.map((trade) => (
+            <div
+              key={trade.id}
+              className="bg-gradient-to-r from-blue-500/15 via-[var(--color-surface)] to-[var(--color-surface)] border-2 border-blue-500/50 rounded-3xl p-4.5 shadow-lg space-y-3"
             >
-              {reAuctioning ? 'Starting...' : 'Re-Auction Now'}
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* RECORD HAMMER ACQUISITION CARD */}
-      {biggestBuy && (
-        <div className="relative overflow-hidden bg-gradient-to-r from-amber-500/15 via-rose-500/10 to-amber-500/5 border border-amber-500/40 rounded-3xl p-5 shadow-lg">
-          <div className="flex items-center justify-between">
-            <div className="inline-flex items-center space-x-1.5 px-3 py-1 rounded-full bg-amber-500 text-stone-950 font-display text-[10px] font-black uppercase tracking-wider shadow-sm">
-              <Flame className="w-3.5 h-3.5 fill-stone-950 animate-bounce" />
-              <span>Record Hammer Acquisition</span>
-            </div>
-            <span className="text-xs font-black text-amber-600 dark:text-amber-400 font-mono tracking-tight">
-              ₹{biggestBuy.price} {room?.settings?.purseUnit || 'Cr'}
-            </span>
-          </div>
-
-          <div className="flex items-center justify-between mt-3">
-            <div>
-              <div className="flex items-center space-x-2">
-                <span className={`text-[9px] font-black px-1.5 py-0.5 rounded border uppercase ${getRoleBadgeStyle(biggestBuy.player.role)}`}>
-                  {biggestBuy.player.role}
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-blue-500 text-white inline-flex items-center space-x-1">
+                  <Repeat className="w-3 h-3" />
+                  <span>Incoming Trade Proposal</span>
                 </span>
-                <h3 className="text-xl sm:text-2xl font-black font-display uppercase tracking-wide text-[var(--color-text-main)]">
-                  {biggestBuy.player.name}
-                </h3>
+                <span className="text-[10px] text-[var(--color-text-muted)] font-bold">
+                  From {trade.senderTeamName}
+                </span>
               </div>
-              <p className="text-xs text-[var(--color-text-muted)] mt-1">
-                Hammered to <span className="font-bold text-[var(--color-primary)]">{biggestBuy.teamName}</span>
-              </p>
+
+              <div className="flex items-center justify-between bg-[var(--color-surface-subtle)] p-3 rounded-2xl border border-[var(--color-border)] text-xs">
+                <div>
+                  <span className="text-[9px] text-[var(--color-text-dim)] uppercase font-bold block">You Receive</span>
+                  <div className="flex items-center space-x-1.5 font-bold text-emerald-500">
+                    <span className={`text-[8px] font-black px-1 py-0.5 rounded border uppercase ${getRoleBadgeStyle(trade.senderPlayer.role)}`}>
+                      {trade.senderPlayer.role}
+                    </span>
+                    <span>{trade.senderPlayer.name}</span>
+                  </div>
+                </div>
+
+                <ArrowDownUp className="w-4 h-4 text-[var(--color-text-dim)]" />
+
+                <div className="text-right">
+                  <span className="text-[9px] text-[var(--color-text-dim)] uppercase font-bold block">You Give</span>
+                  <div className="flex items-center justify-end space-x-1.5 font-bold text-rose-500">
+                    <span>{trade.receiverPlayer.name}</span>
+                    <span className={`text-[8px] font-black px-1 py-0.5 rounded border uppercase ${getRoleBadgeStyle(trade.receiverPlayer.role)}`}>
+                      {trade.receiverPlayer.role}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center space-x-2">
+                <button
+                  type="button"
+                  disabled={tradeActionLoading === trade.id}
+                  onClick={() => handleRespondToTrade(trade.id, true)}
+                  className="flex-1 py-2 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-display text-xs font-bold uppercase tracking-wider transition cursor-pointer shadow-md active:scale-95 flex items-center justify-center space-x-1.5"
+                >
+                  <Check className="w-4 h-4" />
+                  <span>{tradeActionLoading === trade.id ? 'Accepting...' : 'Accept Trade'}</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={tradeActionLoading === trade.id}
+                  onClick={() => handleRespondToTrade(trade.id, false)}
+                  className="py-2 px-4 rounded-xl bg-[var(--color-surface-subtle)] hover:bg-rose-500/20 text-rose-500 border border-rose-500/30 font-display text-xs font-bold uppercase tracking-wider transition cursor-pointer active:scale-95"
+                >
+                  Decline
+                </button>
+              </div>
             </div>
-          </div>
+          ))}
         </div>
       )}
 
-      {/* OWNER TACTICAL LINEUP STUDIO (INTERACTIVE SWAPPING) */}
+      {/* OUTGOING PENDING TRADES */}
+      {outgoingTrades.length > 0 && (
+        <div className="space-y-2">
+          {outgoingTrades.map((trade) => (
+            <div
+              key={trade.id}
+              className="p-3 bg-[var(--color-surface-subtle)] border border-[var(--color-border)] rounded-2xl flex items-center justify-between text-xs"
+            >
+              <div className="flex items-center space-x-2">
+                <RefreshCw className="w-3.5 h-3.5 text-amber-500 animate-spin" />
+                <span className="text-[var(--color-text-muted)] font-medium">
+                  Trade offer to <span className="font-bold text-[var(--color-text-main)]">{trade.receiverTeamName}</span> pending:
+                </span>
+                <span className="font-bold text-[var(--color-text-main)]">
+                  {trade.senderPlayer.name} ⇄ {trade.receiverPlayer.name}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => handleRespondToTrade(trade.id, false)}
+                className="text-[10px] font-bold text-rose-500 hover:underline cursor-pointer"
+              >
+                Cancel
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* OWNER TACTICAL LINEUP STUDIO (INTERACTIVE SWAPPING & TRADE TRIGGER) */}
       {myTeam && (
         <div className="bg-[var(--color-surface)] border-2 border-[var(--color-primary)]/50 rounded-3xl p-5 sm:p-6 shadow-xl space-y-4">
           <div className="flex items-center justify-between border-b border-[var(--color-border)] pb-3.5">
@@ -382,7 +467,16 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
               </div>
             </div>
 
-            <div>
+            <div className="flex items-center space-x-2">
+              <button
+                type="button"
+                onClick={() => setIsTradeModalOpen(true)}
+                className="text-[10px] font-black font-display uppercase tracking-wider px-3 py-1.5 rounded-xl bg-blue-500/15 hover:bg-blue-500/25 text-blue-600 dark:text-blue-400 border border-blue-500/30 transition cursor-pointer flex items-center space-x-1.5 active:scale-95 shadow-xs"
+              >
+                <Repeat className="w-3.5 h-3.5" />
+                <span>Trade Players</span>
+              </button>
+
               <span
                 className={`font-mono text-xs font-black px-3 py-1 rounded-full border transition-all ${
                   selectedPlayingIds.length === targetPlayingCount
@@ -390,7 +484,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
                     : 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/40'
                 }`}
               >
-                {selectedPlayingIds.length} / {targetPlayingCount} Starting
+                {selectedPlayingIds.length} / {targetPlayingCount}
               </span>
             </div>
           </div>
@@ -421,7 +515,6 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
 
           {/* Lineup Pickers (Starting XI vs Bench) */}
           <div className="space-y-4">
-            {/* STARTING PLAYING UNIT */}
             <div>
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-black font-display uppercase tracking-wider text-emerald-600 dark:text-emerald-400 flex items-center space-x-1.5">
@@ -457,7 +550,6 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
               )}
             </div>
 
-            {/* TACTICAL BENCH RESERVES */}
             <div>
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-black font-display uppercase tracking-wider text-[var(--color-text-dim)] flex items-center space-x-1.5">
@@ -517,9 +609,139 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
         </div>
       )}
 
+      {/* MUTUAL PLAYER TRADE MODAL */}
+      {isTradeModalOpen && myTeam && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-3xl max-w-md w-full p-5 sm:p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-[var(--color-border)] pb-3">
+              <div className="flex items-center space-x-2">
+                <div className="w-8 h-8 rounded-xl bg-blue-500/15 text-blue-500 flex items-center justify-center">
+                  <Repeat className="w-4 h-4" />
+                </div>
+                <h3 className="font-display font-black text-sm uppercase text-[var(--color-text-main)]">
+                  Propose Franchise Trade
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsTradeModalOpen(false)}
+                className="p-1 rounded-lg hover:bg-[var(--color-surface-subtle)] text-[var(--color-text-dim)]"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* 1. Pick player to offer */}
+            <div>
+              <label className="text-[10px] font-black uppercase text-[var(--color-text-dim)] block mb-1.5">
+                Step 1: Choose player you want to trade away
+              </label>
+              <div className="grid grid-cols-2 gap-1.5 max-h-36 overflow-y-auto p-1 bg-[var(--color-surface-subtle)] rounded-xl border border-[var(--color-border)]">
+                {myTeam.players.map((p) => {
+                  const isSelected = myPlayerToOffer?.id === p.id;
+                  return (
+                    <button
+                      type="button"
+                      key={p.id}
+                      onClick={() => setMyPlayerToOffer(p)}
+                      className={`p-2 rounded-lg text-left text-xs transition cursor-pointer border truncate ${
+                        isSelected
+                          ? 'border-blue-500 bg-blue-500/20 font-bold text-blue-500'
+                          : 'border-transparent hover:bg-[var(--color-surface)] text-[var(--color-text-main)]'
+                      }`}
+                    >
+                      <span className={`text-[8px] font-black px-1 py-0.5 rounded mr-1.5 ${getRoleBadgeStyle(p.role)}`}>
+                        {p.role}
+                      </span>
+                      {p.name}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* 2. Choose target team */}
+            <div>
+              <label className="text-[10px] font-black uppercase text-[var(--color-text-dim)] block mb-1.5">
+                Step 2: Select franchise to trade with
+              </label>
+              <select
+                value={targetTeamId}
+                onChange={(e) => {
+                  setTargetTeamId(e.target.value);
+                  setTargetPlayerToAsk(null);
+                }}
+                className="w-full p-2.5 rounded-xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)] text-xs text-[var(--color-text-main)] font-semibold"
+              >
+                <option value="">-- Choose Franchise --</option>
+                {otherTeams.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name} ({t.players.length} players)
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* 3. Pick player to request */}
+            {selectedOtherTeam && (
+              <div>
+                <label className="text-[10px] font-black uppercase text-[var(--color-text-dim)] block mb-1.5">
+                  Step 3: Select player you want in return
+                </label>
+                {selectedOtherTeam.players.length === 0 ? (
+                  <p className="text-xs text-[var(--color-text-dim)] italic">This team has no players to trade.</p>
+                ) : (
+                  <div className="grid grid-cols-2 gap-1.5 max-h-36 overflow-y-auto p-1 bg-[var(--color-surface-subtle)] rounded-xl border border-[var(--color-border)]">
+                    {selectedOtherTeam.players.map((p) => {
+                      const isSelected = targetPlayerToAsk?.id === p.id;
+                      return (
+                        <button
+                          type="button"
+                          key={p.id}
+                          onClick={() => setTargetPlayerToAsk(p)}
+                          className={`p-2 rounded-lg text-left text-xs transition cursor-pointer border truncate ${
+                            isSelected
+                              ? 'border-emerald-500 bg-emerald-500/20 font-bold text-emerald-500'
+                              : 'border-transparent hover:bg-[var(--color-surface)] text-[var(--color-text-main)]'
+                          }`}
+                        >
+                          <span className={`text-[8px] font-black px-1 py-0.5 rounded mr-1.5 ${getRoleBadgeStyle(p.role)}`}>
+                            {p.role}
+                          </span>
+                          {p.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Trade Preview & Send Button */}
+            <div className="pt-2 border-t border-[var(--color-border)]">
+              {myPlayerToOffer && targetPlayerToAsk && (
+                <div className="mb-3 p-2.5 rounded-xl bg-blue-500/10 border border-blue-500/30 text-xs text-center">
+                  Trade <span className="font-bold text-rose-500">{myPlayerToOffer.name}</span> for{' '}
+                  <span className="font-bold text-emerald-500">{targetPlayerToAsk.name}</span>
+                </div>
+              )}
+
+              <button
+                type="button"
+                disabled={isProposingTrade || !myPlayerToOffer || !targetPlayerToAsk}
+                onClick={handleSendTradeProposal}
+                className="w-full py-2.5 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-display text-xs font-bold uppercase tracking-wider transition cursor-pointer shadow-md flex items-center justify-center space-x-1.5 active:scale-95"
+              >
+                <Send className="w-3.5 h-3.5" />
+                <span>{isProposingTrade ? 'Transmitting Proposal...' : 'Send Mutual Trade Offer'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* MASTER AI PRIME-FORM POWER RANKINGS (1 TO N) */}
       <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-3xl p-5 sm:p-6 shadow-xl space-y-5">
-        {/* Header & Host Re-Scout Trigger */}
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-3">
             <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-amber-500 to-emerald-500 text-white flex items-center justify-center shadow-md">
@@ -547,17 +769,6 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
           )}
         </div>
 
-        {/* Readiness Count */}
-        <div className="p-3 bg-[var(--color-surface-subtle)] border border-[var(--color-border)] rounded-2xl flex items-center justify-between text-xs">
-          <span className="font-semibold text-[var(--color-text-muted)] flex items-center space-x-1.5">
-            <Users className="w-4 h-4 text-[var(--color-primary)]" />
-            <span>Owner Lineups Submitted</span>
-          </span>
-          <span className="font-mono font-black text-xs px-2.5 py-1 rounded-xl bg-[var(--color-surface-elevated)] border border-[var(--color-border)] text-[var(--color-primary)]">
-            {submittedCount} / {teamsList.length} Franchises Locked
-          </span>
-        </div>
-
         {analyzing && (
           <div className="py-10 text-center space-y-3">
             <div className="w-9 h-9 border-3 border-emerald-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
@@ -569,12 +780,10 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
 
         {!analyzing && masterReport && (
           <div className="space-y-4">
-            {/* Executive Summary */}
             <div className="p-4 bg-gradient-to-r from-emerald-500/10 via-[var(--color-surface-subtle)] to-[var(--color-surface-subtle)] border border-emerald-500/25 rounded-2xl text-xs text-[var(--color-text-main)] italic leading-relaxed">
               "{masterReport.executiveSummary}"
             </div>
 
-            {/* DYNAMIC LEADERBOARD (1 TO N) */}
             <div className="space-y-3.5">
               {masterReport.rankings.map((rep, idx) => {
                 const dynamicRank = idx + 1;
@@ -590,7 +799,6 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
                         : 'border-[var(--color-border)] bg-[var(--color-surface)] hover:border-[var(--color-border-hover)]'
                     }`}
                   >
-                    {/* Header Row */}
                     <div
                       onClick={() => setExpandedTeamId(isExpanded ? null : rep.teamId)}
                       className="p-4 cursor-pointer hover:bg-[var(--color-surface-subtle)] transition space-y-3"
@@ -609,22 +817,14 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
                         </div>
 
                         <div className="flex items-center space-x-3">
-                          <div className="text-right">
-                            <div className={`font-mono font-black text-sm px-3 py-1 rounded-full border shadow-xs ${getScoreColor(rep.scoreOutOf10)}`}>
-                              {rep.scoreOutOf10.toFixed(1)}
-                              <span className="text-[9px] text-[var(--color-text-dim)] font-normal"> / 10</span>
-                            </div>
+                          <div className={`font-mono font-black text-sm px-3 py-1 rounded-full border shadow-xs ${getScoreColor(rep.scoreOutOf10)}`}>
+                            {rep.scoreOutOf10.toFixed(1)}
+                            <span className="text-[9px] text-[var(--color-text-dim)] font-normal"> / 10</span>
                           </div>
-
-                          {isExpanded ? (
-                            <ChevronUp className="w-4 h-4 text-[var(--color-text-dim)]" />
-                          ) : (
-                            <ChevronDown className="w-4 h-4 text-[var(--color-text-dim)]" />
-                          )}
+                          {isExpanded ? <ChevronUp className="w-4 h-4 text-[var(--color-text-dim)]" /> : <ChevronDown className="w-4 h-4 text-[var(--color-text-dim)]" />}
                         </div>
                       </div>
 
-                      {/* Animated Score Bar */}
                       <div className="w-full bg-[var(--color-surface-subtle)] h-1.5 rounded-full overflow-hidden border border-[var(--color-border)]">
                         <div
                           className="h-full rounded-full transition-all duration-700 ease-out bg-gradient-to-r from-emerald-500 via-amber-500 to-emerald-400"
@@ -633,10 +833,8 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
                       </div>
                     </div>
 
-                    {/* Expandable Diagnostic Drawer */}
                     {isExpanded && (
                       <div className="p-4.5 border-t border-[var(--color-border)] bg-[var(--color-surface)] space-y-4 text-xs">
-                        {/* Bench Deduction Warning */}
                         {rep.benchPenaltyNote && (
                           <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-2xl text-[11px] text-rose-700 dark:text-rose-300 font-semibold flex items-start space-x-2">
                             <AlertTriangle className="w-4 h-4 flex-shrink-0 text-rose-500 mt-0.5" />
@@ -644,65 +842,30 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
                           </div>
                         )}
 
-                        {/* 4-Pillar Matrix */}
                         <div>
                           <span className="text-[10px] font-black uppercase tracking-wider text-[var(--color-text-dim)] block mb-2">
                             Tactical Balance Matrix
                           </span>
                           <div className="grid grid-cols-2 gap-2 text-[11px]">
                             <div className="p-2.5 rounded-xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)]">
-                              <span className="text-[9px] text-[var(--color-text-dim)] uppercase font-bold block">
-                                Batting Depth
-                              </span>
-                              <span className="font-bold text-[var(--color-text-main)]">
-                                {rep.playingBalance.battingDepth}
-                              </span>
+                              <span className="text-[9px] text-[var(--color-text-dim)] uppercase font-bold block">Batting Depth</span>
+                              <span className="font-bold text-[var(--color-text-main)]">{rep.playingBalance.battingDepth}</span>
                             </div>
                             <div className="p-2.5 rounded-xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)]">
-                              <span className="text-[9px] text-[var(--color-text-dim)] uppercase font-bold block">
-                                Death Bowling
-                              </span>
-                              <span className="font-bold text-[var(--color-text-main)]">
-                                {rep.playingBalance.deathBowling}
-                              </span>
+                              <span className="text-[9px] text-[var(--color-text-dim)] uppercase font-bold block">Death Bowling</span>
+                              <span className="font-bold text-[var(--color-text-main)]">{rep.playingBalance.deathBowling}</span>
                             </div>
                             <div className="p-2.5 rounded-xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)]">
-                              <span className="text-[9px] text-[var(--color-text-dim)] uppercase font-bold block">
-                                Spin & Middle Control
-                              </span>
-                              <span className="font-bold text-[var(--color-text-main)]">
-                                {rep.playingBalance.spinQuality}
-                              </span>
+                              <span className="text-[9px] text-[var(--color-text-dim)] uppercase font-bold block">Spin & Middle Control</span>
+                              <span className="font-bold text-[var(--color-text-main)]">{rep.playingBalance.spinQuality}</span>
                             </div>
                             <div className="p-2.5 rounded-xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)]">
-                              <span className="text-[9px] text-[var(--color-text-dim)] uppercase font-bold block">
-                                Bench Quality Status
-                              </span>
-                              <span className="font-bold text-[var(--color-text-main)]">
-                                {rep.benchStrength}
-                              </span>
+                              <span className="text-[9px] text-[var(--color-text-dim)] uppercase font-bold block">Bench Quality</span>
+                              <span className="font-bold text-[var(--color-text-main)]">{rep.benchStrength}</span>
                             </div>
                           </div>
                         </div>
 
-                        {/* 6th Bowling Security */}
-                        {rep.metrics && (
-                          <div className="p-2.5 rounded-xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)] flex items-center justify-between text-[11px]">
-                            <span className="font-medium text-[var(--color-text-muted)]">6th Bowling Option Security:</span>
-                            <span
-                              className={`font-black flex items-center space-x-1 ${
-                                rep.metrics.sixthBowlingOption
-                                  ? 'text-emerald-600 dark:text-emerald-400'
-                                  : 'text-amber-600 dark:text-amber-400'
-                              }`}
-                            >
-                              <ShieldCheck className="w-3.5 h-3.5" />
-                              <span>{rep.metrics.sixthBowlingOption ? 'Guaranteed (A+)' : 'Missing / High Risk (C)'}</span>
-                            </span>
-                          </div>
-                        )}
-
-                        {/* Strengths */}
                         {rep.pros?.length > 0 && (
                           <div className="space-y-1.5">
                             <span className="text-[10px] font-black uppercase text-emerald-600 dark:text-emerald-400 block flex items-center space-x-1">
@@ -717,7 +880,6 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
                           </div>
                         )}
 
-                        {/* Vulnerabilities */}
                         {rep.cons?.length > 0 && (
                           <div className="space-y-1.5">
                             <span className="text-[10px] font-black uppercase text-rose-600 dark:text-rose-400 block flex items-center space-x-1">
@@ -743,12 +905,10 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
         {!analyzing && !masterReport && (
           <div className="p-7 text-center bg-[var(--color-surface-subtle)] rounded-2xl border border-dashed border-[var(--color-border)] space-y-1.5">
             <TrendingUp className="w-7 h-7 text-[var(--color-text-dim)] mx-auto mb-1 animate-pulse" />
-            <p className="text-xs font-bold text-[var(--color-text-main)]">
-              Leaderboard Simulation Pending
-            </p>
+            <p className="text-xs font-bold text-[var(--color-text-main)]">Leaderboard Simulation Pending</p>
             <p className="text-[11px] text-[var(--color-text-muted)]">
               {isHost
-                ? 'Tap "Analyze Teams" above to generate the full tournament ranking and head-to-head tactical scout.'
+                ? 'Tap "Analyze Teams" above to generate the full tournament ranking.'
                 : 'Waiting for the host to trigger the AI tournament scout...'}
             </p>
           </div>
@@ -769,9 +929,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
           >
             <div className="flex items-center justify-between pb-2.5 border-b border-[var(--color-border)]">
               <div>
-                <h3 className="text-sm font-black font-display uppercase text-[var(--color-text-main)]">
-                  {team.name}
-                </h3>
+                <h3 className="text-sm font-black font-display uppercase text-[var(--color-text-main)]">{team.name}</h3>
                 <span className="text-[11px] text-[var(--color-text-muted)] font-medium">
                   Owner: {team.claimedByOwnerName || 'Unclaimed'}
                 </span>
@@ -799,9 +957,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
                       <span className={`text-[8px] font-black px-1.5 py-0.5 rounded border uppercase ${getRoleBadgeStyle(p.role)}`}>
                         {p.role}
                       </span>
-                      <span className="font-bold text-[var(--color-text-main)] truncate text-[11px]">
-                        {p.name}
-                      </span>
+                      <span className="font-bold text-[var(--color-text-main)] truncate text-[11px]">{p.name}</span>
                     </div>
                     <span className="font-mono font-bold text-amber-500 text-[11px] flex-shrink-0 ml-1.5">
                       ₹{p.soldPrice ?? p.basePrice}
@@ -817,7 +973,6 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
       {/* HOST RESTART & RE-AUCTION CONTROLS */}
       {isHost && (
         <div className="sticky bottom-4 bg-[var(--color-surface)]/95 backdrop-blur-md border border-[var(--color-border)] p-4 rounded-2xl shadow-2xl text-center space-y-2.5 z-20">
-          {/* RE-AUCTION UNSOLD BUTTON */}
           {unsoldPlayers.length > 0 && (
             <button
               type="button"
@@ -827,14 +982,11 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
             >
               <RotateCcw className={`w-4 h-4 ${reAuctioning ? 'animate-spin' : ''}`} />
               <span>
-                {reAuctioning
-                  ? 'Preparing Round...'
-                  : `Re-Auction Unsold Players (${unsoldPlayers.length} Left)`}
+                {reAuctioning ? 'Preparing Round...' : `Re-Auction Unsold Players (${unsoldPlayers.length} Left)`}
               </span>
             </button>
           )}
 
-          {/* RESET AUCTION BUTTON */}
           <button
             type="button"
             disabled={resetting}
@@ -844,12 +996,6 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
             <RotateCcw className={`w-3.5 h-3.5 ${resetting ? 'animate-spin' : ''}`} />
             <span>{resetting ? 'Resetting Room...' : 'Start A Brand New Auction'}</span>
           </button>
-
-          <p className="text-[10px] text-[var(--color-text-dim)]">
-            {unsoldPlayers.length > 0
-              ? `Re-auction starts Round ${(room?.round || 1) + 1} with unsold players while preserving all existing squads & remaining purses.`
-              : 'Clears all purses and rosters back to lobby while preserving team claims.'}
-          </p>
         </div>
       )}
     </div>

@@ -669,3 +669,110 @@ export async function saveMasterScoutReport(
     return { success: false, error: err?.message || 'Failed to save scout report.' };
   }
 }
+
+export interface TradeProposal {
+  id: string;
+  senderTeamId: string;
+  senderTeamName: string;
+  senderPlayer: Player;
+  receiverTeamId: string;
+  receiverTeamName: string;
+  receiverPlayer: Player;
+  status: 'pending' | 'accepted' | 'declined' | 'cancelled';
+  createdAt: number;
+}
+
+export async function proposeTradeTransaction(
+  roomCodeInput: string,
+  senderTeam: Team,
+  senderPlayer: Player,
+  receiverTeam: Team,
+  receiverPlayer: Player
+): Promise<{ success: boolean; error?: string }> {
+  const roomCode = resolveRoomCode(roomCodeInput);
+  const roomRef = doc(db, 'rooms', roomCode);
+
+  try {
+    const tradeId = `trade_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const tradeItem: TradeProposal = {
+      id: tradeId,
+      senderTeamId: senderTeam.id,
+      senderTeamName: senderTeam.name,
+      senderPlayer,
+      receiverTeamId: receiverTeam.id,
+      receiverTeamName: receiverTeam.name,
+      receiverPlayer,
+      status: 'pending',
+      createdAt: Date.now(),
+    };
+
+    await updateDoc(roomRef, {
+      [`trades.${tradeId}`]: tradeItem,
+    });
+
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Failed to send trade proposal.' };
+  }
+}
+
+export async function respondTradeTransaction(
+  roomCodeInput: string,
+  tradeId: string,
+  accept: boolean
+): Promise<{ success: boolean; error?: string }> {
+  const roomCode = resolveRoomCode(roomCodeInput);
+  const roomRef = doc(db, 'rooms', roomCode);
+
+  try {
+    return await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(roomRef);
+      if (!snap.exists()) throw new Error('Room not found');
+
+      const room = snap.data() as any;
+      const trade: TradeProposal = room?.trades?.[tradeId];
+      if (!trade || trade.status !== 'pending') {
+        throw new Error('Trade proposal is no longer active.');
+      }
+
+      if (!accept) {
+        transaction.update(roomRef, {
+          [`trades.${tradeId}.status`]: 'declined',
+        });
+        return { success: true };
+      }
+
+      // Mutual acceptance: Atomically swap players between both teams
+      const rawTeams = normalizeTeamsArray(room.teams);
+      const teamA = rawTeams.find((t) => t.id === trade.senderTeamId);
+      const teamB = rawTeams.find((t) => t.id === trade.receiverTeamId);
+
+      if (!teamA || !teamB) throw new Error('One of the trading teams was not found.');
+
+      // Check if both players still belong to their respective teams
+      const hasPlayerA = teamA.players.some((p) => p.id === trade.senderPlayer.id);
+      const hasPlayerB = teamB.players.some((p) => p.id === trade.receiverPlayer.id);
+
+      if (!hasPlayerA || !hasPlayerB) {
+        throw new Error('One of the players is no longer with the original squad.');
+      }
+
+      // Swap players
+      teamA.players = teamA.players.map((p) =>
+        p.id === trade.senderPlayer.id ? { ...trade.receiverPlayer, soldToTeamId: teamA.id } : p
+      );
+      teamB.players = teamB.players.map((p) =>
+        p.id === trade.receiverPlayer.id ? { ...trade.senderPlayer, soldToTeamId: teamB.id } : p
+      );
+
+      transaction.update(roomRef, {
+        teams: cleanData(rawTeams),
+        [`trades.${tradeId}.status`]: 'accepted',
+      });
+
+      return { success: true };
+    });
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Failed to process trade.' };
+  }
+  }
