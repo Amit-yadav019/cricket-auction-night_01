@@ -6,11 +6,7 @@ import {
   CheckCircle2,
   AlertTriangle,
   Flame,
-  ArrowUp,
-  Clock,
-  Sparkles,
   RefreshCw,
-  Trophy,
   Volume2,
   VolumeX,
 } from 'lucide-react';
@@ -27,6 +23,7 @@ import {
   calculateMaxBid,
   getValidNextBids,
   PlayerRole,
+  Team,
 } from '../game/auctionRules';
 import {
   playBidChime,
@@ -34,10 +31,8 @@ import {
   playUnsoldChime,
   playUndoSound,
   playOutbidSound,
-  playWarningSound,
   speakAuctioneer,
 } from '../utils/audio';
-import { fetchAiCommentary } from '../services/aiService';
 
 interface AuctionViewProps {
   room: RoomData;
@@ -64,12 +59,12 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
   const [biddingError, setBiddingError] = useState('');
   const [hostActionLoading, setHostActionLoading] = useState(false);
 
-  // Selected raise multiplier for owner (0 for first bid, 1, 2, or 4)
+  // Selected raise multiplier for owner (1, 2, or 4 steps)
   const [selectedMultiplier, setSelectedMultiplier] = useState<number>(1);
 
   // Host selected paddle team (for host bidding on behalf of teams)
   const [hostPaddleTeamId, setHostPaddleTeamId] = useState<string>(
-    room.teams[0]?.id || ''
+    room.teams?.[0]?.id || ''
   );
 
   // Track stamp visibility for 2.5s
@@ -77,9 +72,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
   const [lastStampResult, setLastStampResult] = useState(room.lastResult);
   const [isScreenShaking, setIsScreenShaking] = useState(false);
 
-  // AI Live Commentary & Voice Narration
-  const [aiCommentary, setAiCommentary] = useState<string>('');
-  const [isGeneratingCommentary, setIsGeneratingCommentary] = useState<boolean>(false);
+  // Voice narration toggle
   const [voiceNarration, setVoiceNarration] = useState<boolean>(false);
 
   const prevLeadingTeamIdRef = useRef<string | null>(null);
@@ -111,116 +104,85 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
         else playUnsoldChime();
       }
 
-      // Fetch AI Sold/Unsold Commentary
-      const foundPlayer = room.allPlayers.find((p) => p.name === room.lastResult?.playerName);
-      fetchAiCommentary({
-        player: {
-          name: room.lastResult.playerName,
-          role: foundPlayer?.role || 'BAT',
-          basePrice: foundPlayer?.basePrice || 0.5,
-        },
-        teamName: room.lastResult.teamName,
-        event: room.lastResult.type === 'SOLD' ? 'sold' : 'unsold',
-        bidAmount: room.lastResult.amount,
-        purseUnit: room.settings.purseUnit,
-      }).then((line) => {
-        setAiCommentary(line);
-        if (voiceNarration && soundEnabled) speakAuctioneer(line);
-      });
+      if (voiceNarration && soundEnabled) {
+        const text =
+          room.lastResult.type === 'SOLD'
+            ? `${room.lastResult.playerName} sold to ${room.lastResult.teamName} for ${room.lastResult.amount} ${room.settings?.purseUnit || 'Crores'}`
+            : `${room.lastResult.playerName} goes unsold.`;
+        speakAuctioneer(text);
+      }
 
       const timer = setTimeout(() => setShowStamp(false), 2600);
       return () => clearTimeout(timer);
     }
-  }, [room.lastResult, soundEnabled, voiceNarration]);
-
-  // AI Commentary trigger on new lot entering the podium
-  useEffect(() => {
-    if (!room.currentLot) return;
-    const currentLotPlayer = room.currentLot.player;
-    setIsGeneratingCommentary(true);
-
-    fetchAiCommentary({
-      player: {
-        name: currentLotPlayer.name,
-        role: currentLotPlayer.role,
-        basePrice: currentLotPlayer.basePrice,
-      },
-      event: 'lot_start',
-      purseUnit: room.settings.purseUnit,
-    }).then((line) => {
-      setAiCommentary(line);
-      setIsGeneratingCommentary(false);
-      if (voiceNarration && soundEnabled) speakAuctioneer(line);
-    });
-  }, [room.currentLot?.player.id]);
+  }, [room.lastResult, soundEnabled, voiceNarration, lastStampResult?.timestamp, room.settings?.purseUnit]);
 
   // Detect outbid and bid audio cues
   useEffect(() => {
     if (!room.currentLot) return;
-    const bids = room.currentLot.bidHistory;
+    const bids = room.currentLot.bidHistory || [];
     if (bids.length > prevBidCountRef.current) {
       const latest = bids[0];
-      const myTeam = room.teams.find((t) => t.ownerToken === ownerToken);
+      const myTeam = (room.teams || []).find((t) => t.ownerToken === ownerToken);
 
-      // Play outbid warning if user's team held the lead and just lost it
       if (
         myTeam &&
         prevLeadingTeamIdRef.current === myTeam.id &&
-        latest.teamId !== myTeam.id
+        latest?.teamId !== myTeam.id
       ) {
         if (soundEnabled) playOutbidSound();
       } else {
-        if (soundEnabled) playBidChime(latest.amount);
+        if (soundEnabled && latest) playBidChime(latest.amount);
       }
     }
     prevBidCountRef.current = bids.length;
-    prevLeadingTeamIdRef.current = room.currentLot.leadingTeamId;
-  }, [room.currentLot?.bidHistory.length, room.currentLot?.leadingTeamId, ownerToken, soundEnabled]);
+    prevLeadingTeamIdRef.current = room.currentLot.leadingTeamId || null;
+  }, [room.currentLot?.bidHistory?.length, room.currentLot?.leadingTeamId, ownerToken, soundEnabled]);
 
   const lot = room.currentLot;
   const currentBid = lot?.currentBid ?? null;
   const isFirstBid = currentBid === null;
 
-  // Determine which team the current user is bidding for
-  const myClaimedTeam = room.teams.find((t) => t.ownerToken === ownerToken);
-  // For host, if no claimed team, use hostPaddleTeamId
+  // Determine active bidding team
+  const myClaimedTeam = (room.teams || []).find((t) => t.ownerToken === ownerToken);
   const activeBiddingTeam = isHost
-    ? room.teams.find((t) => t.id === hostPaddleTeamId) || myClaimedTeam || room.teams[0]
+    ? (room.teams || []).find((t) => t.id === hostPaddleTeamId) || myClaimedTeam || room.teams?.[0]
     : myClaimedTeam;
 
-  const teamPlayerCount = activeBiddingTeam ? activeBiddingTeam.players.length : 0;
+  const teamPlayerCount = activeBiddingTeam ? (activeBiddingTeam.players?.length || 0) : 0;
   const teamPurse = activeBiddingTeam ? activeBiddingTeam.purse : 0;
 
-  const lowestBasePrice = Math.min(...room.allPlayers.map((p) => p.basePrice), 0.5);
-
-  // Calculate stats for the active bidding team
-  const maxSquad = room.settings.maxSquadSize || room.settings.squadSize;
-  const minSquad = room.settings.minSquadSize || maxSquad;
+  const maxSquad = room.settings?.maxSquadSize || room.settings?.squadSize || 25;
+  const minSquad = room.settings?.minSquadSize || maxSquad;
   const slotsLeft = maxSquad - teamPlayerCount;
+
+  // Adapter for calculateMaxBid (which expects a Team object)
   const maxAllowedBid = activeBiddingTeam
     ? calculateMaxBid(
-        teamPurse,
-        teamPlayerCount,
-        maxSquad,
-        lowestBasePrice,
-        minSquad
+        {
+          id: activeBiddingTeam.id,
+          name: activeBiddingTeam.name,
+          shortName: activeBiddingTeam.shortName,
+          purse: activeBiddingTeam.purse,
+          spent: activeBiddingTeam.spent || 0,
+          players: activeBiddingTeam.players || [],
+        } as Team,
+        maxSquad
       )
     : 0;
 
-  // Valid next bids
-  const validNextBids = lot
-    ? getValidNextBids(currentBid, lot.player.basePrice, room.settings.bidStep)
+  // Valid next bids (returns number[])
+  const validNextBids: number[] = lot
+    ? getValidNextBids(currentBid || 0, lot.player.basePrice, 3)
     : [];
 
-  // Determine current selected bid amount
+  // Calculate proposed bid amount
   let proposedBidAmount = 0;
   if (isFirstBid) {
     proposedBidAmount = lot?.player.basePrice || 0;
   } else {
-    const match = validNextBids.find((b) => b.multiplier === selectedMultiplier);
-    proposedBidAmount = match
-      ? match.amount
-      : validNextBids[0]?.amount || (currentBid || 0) + room.settings.bidStep;
+    const step = room.settings?.bidStep || 0.5;
+    proposedBidAmount = Number(((currentBid || 0) + selectedMultiplier * step).toFixed(2));
   }
 
   // Reason why active bidding team cannot bid
@@ -247,7 +209,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
   const handlePlaceBid = async (overrideTeamId?: string, overrideAmount?: number, overrideMult?: number) => {
     if (!lot) return;
     const targetTeam = overrideTeamId
-      ? room.teams.find((t) => t.id === overrideTeamId)
+      ? (room.teams || []).find((t) => t.id === overrideTeamId)
       : activeBiddingTeam;
 
     if (!targetTeam) return;
@@ -270,10 +232,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
 
     setBidding(false);
     if (!res.success) {
-      setBiddingError(res.error || 'Bid rejected');
-      setTimeout(() => setBiddingError(''), 4000);
-    } else {
-      if (soundEnabled) playBidChime();
+      setBiddingError(res.error || 'Failed to place bid');
     }
   };
 
@@ -348,9 +307,9 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
     }
   };
 
-  // Round ended screen: show options for re-auction or end
+  // Round ended screen
   if (room.status === 'round_ended') {
-    const unsoldPlayers = room.allPlayers.filter((p) => p.status === 'unsold');
+    const unsoldPlayers = (room.allPlayers || []).filter((p) => p.status === 'unsold');
     return (
       <div className="w-full max-w-[540px] mx-auto px-4 py-8 text-center space-y-6">
         <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-3xl p-6 shadow-sm">
@@ -365,7 +324,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
             <span className="font-bold text-[var(--color-text-main)]">
               {unsoldPlayers.length} unsold players
             </span>{' '}
-            available and teams with open squad slots.
+            available.
           </p>
 
           {isHost ? (
@@ -374,10 +333,10 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
                 type="button"
                 disabled={hostActionLoading}
                 onClick={handleHostReAuction}
-                className="w-full min-h-[48px] py-3.5 px-6 rounded-xl bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white font-display text-lg font-bold uppercase tracking-wider shadow-md transition active:scale-[0.99] flex items-center justify-center space-x-2 cursor-pointer"
+                className="w-full min-h-[44px] py-3.5 px-6 rounded-xl bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white font-display text-lg font-bold uppercase tracking-wider transition active:scale-[0.98] flex items-center justify-center space-x-2 cursor-pointer"
               >
                 <RefreshCw className="w-5 h-5" />
-                <span>Re-auction Unsold ({unsoldPlayers.length})</span>
+                <span>Re-Auction Unsold ({unsoldPlayers.length})</span>
               </button>
               <button
                 type="button"
@@ -400,14 +359,13 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
 
   const isBiddingWar = Boolean(
     lot &&
-      lot.bidHistory.length >= 2 &&
-      lot.bidHistory[0].timestamp - lot.bidHistory[1].timestamp < 14000 &&
-      lot.bidHistory[0].teamId !== lot.bidHistory[1].teamId
+    (lot.bidHistory?.length || 0) >= 2 &&
+    (lot.bidHistory?.[0]?.timestamp || 0) - (lot.bidHistory?.[1]?.timestamp || 0) < 4000 &&
+    lot.bidHistory?.[0]?.teamId !== lot.bidHistory?.[1]?.teamId
   );
 
   return (
-    <div className={`w-full max-w-[540px] mx-auto px-4 py-3 space-y-3 ${isScreenShaking ? 'shake-active' : ''}`}>
-      {/* Offline Banner for Owners */}
+    <div className={`w-full max-w-[540px] mx-auto px-4 py-3 space-y-3 ${isScreenShaking ? 'shake-action' : ''}`}>
       {!isHost && isHostOffline && (
         <div className="p-3 bg-red-600 text-white rounded-xl text-xs font-bold flex items-center justify-center space-x-2 shadow-md animate-pulse">
           <AlertTriangle className="w-4 h-4 flex-shrink-0" />
@@ -415,7 +373,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
         </div>
       )}
 
-      {/* Navigation Tabs (Auction / Squads / Log / Summary) */}
+      {/* Tabs */}
       <div className="grid grid-cols-4 gap-1 bg-[var(--color-surface-subtle)] p-1 rounded-xl border border-[var(--color-border)]">
         <button
           onClick={() => setActiveTab('auction')}
@@ -456,7 +414,6 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
         </button>
       </div>
 
-      {/* Error notification if simultaneous bid or failure */}
       {biddingError && (
         <div className="p-2.5 bg-amber-50 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-700 rounded-xl text-center text-xs font-bold text-amber-900 dark:text-amber-100 animate-bounce">
           {biddingError}
@@ -466,7 +423,6 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
       {/* CURRENT PLAYER CARD */}
       {lot ? (
         <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-2xl p-4 sm:p-5 shadow-sm relative overflow-hidden">
-          {/* Animated SOLD / UNSOLD Rubber Stamp with authentic ink look */}
           {showStamp && lastStampResult && (
             <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/45 backdrop-blur-[2px] pointer-events-none">
               <div
@@ -481,7 +437,6 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
             </div>
           )}
 
-          {/* Top Info Bar */}
           <div className="flex items-center justify-between mb-2">
             <span
               className={`text-xs font-bold px-2 py-0.5 rounded-full border ${getRoleBadgeColor(
@@ -491,94 +446,71 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
               {lot.player.role}
             </span>
             <span className="text-xs font-bold text-[var(--color-text-dim)] font-mono">
-              Base: ₹{lot.player.basePrice} {room.settings.purseUnit}
+              Base: ₹{lot.player.basePrice} {room.settings?.purseUnit || 'Cr'}
             </span>
           </div>
 
-          {/* Player Name */}
           <div className="text-center my-1">
             <h2 className="text-2xl sm:text-3xl font-black font-display tracking-wide uppercase text-[var(--color-text-main)]">
               {lot.player.name}
             </h2>
           </div>
 
-          {/* Big Current Bid Number */}
+          {/* Current Bid Display */}
           <div className="my-3 text-center bg-[var(--color-surface-subtle)] border border-[var(--color-border)] rounded-xl py-3 px-4">
             {isBiddingWar && (
               <div className="mb-2 inline-flex items-center space-x-1 px-3 py-0.5 rounded-full bg-red-600 text-white text-[10px] font-black font-display uppercase tracking-wider bidding-war-pulse shadow-sm">
                 <Flame className="w-3.5 h-3.5 fill-white" />
-                <span>Bidding War in Progress!</span>
+                <span>Bidding War In Progress!</span>
               </div>
             )}
             <div className="text-[11px] font-bold font-display uppercase tracking-wider text-[var(--color-text-muted)]">
               {lot.currentBid === null ? 'Starting Bid Required' : 'Current Leading Bid'}
             </div>
             <div className="text-4xl sm:text-5xl font-black font-display tracking-tight text-[var(--color-accent)] scoreboard-num mt-0.5">
-              ₹ {lot.currentBid !== null ? lot.currentBid : lot.player.basePrice}{' '}
-              <span className="text-2xl font-bold">{room.settings.purseUnit}</span>
-            </div>
-
-            {/* Leading Team Banner */}
-            <div className="mt-1.5 flex items-center justify-center space-x-1.5 text-xs font-semibold text-[var(--color-text-main)]">
-              {lot.leadingTeamName ? (
-                <>
-                  <Flame className="w-4 h-4 text-amber-500 fill-amber-500 animate-pulse" />
-                  <span className="text-[var(--color-text-muted)]">Held by:</span>
-                  <span className="font-bold underline decoration-[var(--color-primary)] decoration-2">
-                    {lot.leadingTeamName}
-                  </span>
-                </>
-              ) : (
-                <span className="text-[var(--color-text-dim)] italic">No bids placed yet</span>
-              )}
+              ₹{lot.currentBid !== null ? lot.currentBid : lot.player.basePrice}{' '}
+              <span className="text-2xl font-bold">{room.settings?.purseUnit || 'Cr'}</span>
             </div>
           </div>
 
-          {/* AI AUCTIONEER COMMENTARY BOX */}
-          <div className="mb-3 bg-gradient-to-r from-emerald-500/10 via-amber-500/10 to-emerald-500/5 border border-emerald-500/30 dark:border-emerald-500/40 rounded-xl p-3 shadow-xs relative">
-            <div className="flex items-start space-x-2.5">
-              <div className="w-7 h-7 rounded-lg bg-[var(--color-primary)] text-white flex items-center justify-center flex-shrink-0 mt-0.5 shadow-xs">
-                <Sparkles className="w-4 h-4 text-amber-300" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-black font-display uppercase tracking-wider text-[var(--color-primary)] flex items-center space-x-1.5">
-                    <span>AI Auctioneer Commentary</span>
-                    {isGeneratingCommentary && <span className="animate-pulse">🎙️...</span>}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const next = !voiceNarration;
-                      setVoiceNarration(next);
-                      if (next && aiCommentary) speakAuctioneer(aiCommentary);
-                    }}
-                    title={voiceNarration ? 'Mute AI voice' : 'Enable AI voice narration'}
-                    className={`px-2 py-0.5 rounded-md text-[10px] flex items-center space-x-1 font-bold transition cursor-pointer ${
-                      voiceNarration
-                        ? 'bg-[var(--color-primary)] text-white shadow-xs'
-                        : 'bg-black/5 dark:bg-white/10 text-[var(--color-text-dim)] hover:text-[var(--color-text-main)]'
-                    }`}
-                  >
-                    {voiceNarration ? <Volume2 className="w-3 h-3" /> : <VolumeX className="w-3 h-3" />}
-                    <span>{voiceNarration ? 'Voice ON' : 'Voice OFF'}</span>
-                  </button>
-                </div>
-                <p className="text-xs font-semibold text-[var(--color-text-main)] mt-1 leading-snug italic">
-                  "{aiCommentary || `${lot.player.name} (${lot.player.role}) is in the auction ring! Let's see those paddles up!`}"
-                </p>
-              </div>
-            </div>
+          <div className="mt-1.5 flex items-center justify-center space-x-1.5 text-xs font-semibold text-[var(--color-text-main)]">
+            {lot.leadingTeamName ? (
+              <>
+                <Flame className="w-4 h-4 text-amber-500 fill-amber-500 animate-pulse" />
+                <span className="text-[var(--color-text-muted)]">Held by:</span>
+                <span className="font-bold underline decoration-[var(--color-primary)] decoration-2">
+                  {lot.leadingTeamName}
+                </span>
+              </>
+            ) : (
+              <span className="text-[var(--color-text-dim)] italic">No bids placed yet</span>
+            )}
           </div>
 
-          {/* Last 4 Bids Feed */}
-          {lot.bidHistory.length > 0 && (
-            <div className="space-y-1 mb-2">
+          {/* Voice Narration Toggle */}
+          <div className="mt-3 flex justify-end">
+            <button
+              type="button"
+              onClick={() => setVoiceNarration(!voiceNarration)}
+              className={`px-2.5 py-1 rounded-md text-[11px] flex items-center space-x-1 font-bold transition cursor-pointer ${
+                voiceNarration
+                  ? 'bg-[var(--color-primary)] text-white shadow-xs'
+                  : 'bg-[var(--color-surface-subtle)] text-[var(--color-text-dim)] hover:text-[var(--color-text-main)]'
+              }`}
+            >
+              {voiceNarration ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
+              <span>{voiceNarration ? 'Voice ON' : 'Voice OFF'}</span>
+            </button>
+          </div>
+
+          {/* Recent Bids Feed */}
+          {(lot.bidHistory?.length || 0) > 0 && (
+            <div className="space-y-1 mt-2 mb-2">
               <div className="text-[10px] font-bold text-[var(--color-text-dim)] uppercase tracking-wider">
                 Recent Bids
               </div>
               <div className="flex flex-wrap gap-1.5 max-h-16 overflow-y-auto">
-                {lot.bidHistory.slice(0, 4).map((b, i) => (
+                {(lot.bidHistory || []).slice(0, 4).map((b, i) => (
                   <div
                     key={b.timestamp + i}
                     className={`text-[11px] px-2.5 py-1 rounded-md border flex items-center space-x-1 ${
@@ -594,21 +526,6 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
               </div>
             </div>
           )}
-
-          {/* Last Result Notice Line */}
-          {room.lastResult && (
-            <div className="mt-2 pt-2 border-t border-[var(--color-border)] text-[11px] text-[var(--color-text-muted)] text-center truncate">
-              <span className="font-semibold text-[var(--color-text-dim)]">Last: </span>
-              <span className="font-bold text-[var(--color-text-main)]">{room.lastResult.playerName}</span>
-              {room.lastResult.type === 'SOLD' ? (
-                <span>
-                  {' '}sold to <strong className="text-[var(--color-primary)]">{room.lastResult.teamName}</strong> for ₹{room.lastResult.amount} {room.settings.purseUnit}
-                </span>
-              ) : (
-                <span className="text-gray-500"> marked unsold</span>
-              )}
-            </div>
-          )}
         </div>
       ) : (
         <div className="p-8 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-2xl text-center">
@@ -619,9 +536,8 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
       )}
 
       {/* OWNER BIDDING CONTROLS */}
-      {activeBiddingTeam ? (
+      {activeBiddingTeam && (
         <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-2xl p-4 shadow-sm space-y-3">
-          {/* Team Info Banner */}
           <div className="flex items-center justify-between pb-2 border-b border-[var(--color-border)]">
             <div className="truncate mr-2">
               <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--color-text-dim)]">
@@ -641,7 +557,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
                   {teamPlayerCount}/{minSquad === maxSquad ? maxSquad : `${minSquad}-${maxSquad}`}
                 </span>
               </div>
-              <div className="h-6 w-[1px] bg-[var(--color-border)]"></div>
+              <div className="h-6 w-[1px] bg-[var(--color-border)]" />
               <div>
                 <span className="block text-[10px] font-semibold text-[var(--color-text-dim)]">
                   Purse Left
@@ -650,7 +566,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
                   ₹{teamPurse}
                 </span>
               </div>
-              <div className="h-6 w-[1px] bg-[var(--color-border)]"></div>
+              <div className="h-6 w-[1px] bg-[var(--color-border)]" />
               <div>
                 <span className="block text-[10px] font-semibold text-[var(--color-text-dim)]">
                   Max Bid
@@ -662,7 +578,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
             </div>
           </div>
 
-          {/* Raise Chips (+1x, +2x, +4x) */}
+          {/* Raise Multipliers */}
           {!isFirstBid && (
             <div className="space-y-1">
               <div className="text-[10px] font-bold text-[var(--color-text-dim)] uppercase tracking-wider">
@@ -670,9 +586,8 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
               </div>
               <div className="grid grid-cols-3 gap-2">
                 {[1, 2, 4].map((mult) => {
-                  const targetAmount = Number(
-                    ((currentBid || 0) + mult * room.settings.bidStep).toFixed(2)
-                  );
+                  const step = room.settings?.bidStep || 0.5;
+                  const targetAmount = Number(((currentBid || 0) + mult * step).toFixed(2));
                   const canAffordThis = targetAmount <= maxAllowedBid && targetAmount <= teamPurse;
                   const isSelected = selectedMultiplier === mult;
 
@@ -687,11 +602,11 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
                           ? 'border-[var(--color-primary)] bg-[var(--color-primary-light)] font-bold text-[var(--color-primary)] shadow-xs'
                           : canAffordThis
                           ? 'border-[var(--color-border)] bg-[var(--color-surface-subtle)] text-[var(--color-text-main)] hover:bg-[var(--color-surface-elevated)]'
-                          : 'opacity-40 border-dashed border-gray-300 dark:border-gray-700 cursor-not-allowed text-gray-400'
+                          : 'opacity-40 border-dashed border-gray-300 dark:border-gray-700 cursor-not-allowed'
                       }`}
                     >
                       <span className="text-[11px] font-display font-extrabold uppercase tracking-wide">
-                        +{mult}× ({mult * room.settings.bidStep})
+                        +{mult} ({mult * step})
                       </span>
                       <span className="text-xs font-mono font-bold">₹{targetAmount}</span>
                     </button>
@@ -701,7 +616,6 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
             </div>
           )}
 
-          {/* The Big Bid Button */}
           <button
             type="button"
             disabled={!canBid}
@@ -718,7 +632,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
               <>
                 <Gavel className="w-5 h-5 fill-current transform -rotate-12" />
                 <span>
-                  BID ₹{proposedBidAmount} {room.settings.purseUnit}
+                  BID ₹{proposedBidAmount} {room.settings?.purseUnit || 'Cr'}
                 </span>
               </>
             ) : (
@@ -726,15 +640,9 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
             )}
           </button>
         </div>
-      ) : (
-        <div className="p-4 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-2xl text-center">
-          <p className="text-xs text-[var(--color-text-muted)] font-semibold">
-            You haven't claimed a team yet. Go to Lobby or Squads to claim an open team.
-          </p>
-        </div>
       )}
 
-      {/* HOST CONTROLS & TEAM PADDLES (HOST ONLY) */}
+      {/* HOST CONTROLS & TEAM PADDLES */}
       {isHost && (
         <div className="bg-[var(--color-surface-elevated)] border-2 border-amber-400/80 rounded-2xl p-4 shadow-md space-y-3.5">
           <div className="flex items-center justify-between">
@@ -747,33 +655,39 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
             </span>
           </div>
 
-          {/* Quick Team Paddles */}
           <div>
             <span className="block text-[10px] font-bold text-[var(--color-text-dim)] uppercase tracking-wider mb-1.5">
-              Tap a Paddle to Bid for That Team:
+              Tap a Paddle to Bid For That Team:
             </span>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 max-h-36 overflow-y-auto">
-              {room.teams.map((t) => {
-                const tMaxSquad = room.settings.maxSquadSize || room.settings.squadSize;
-                const tMinSquad = room.settings.minSquadSize || tMaxSquad;
-                const tSlots = tMaxSquad - t.players.length;
+              {(room.teams || []).map((t) => {
+                const tMaxSquad = room.settings?.maxSquadSize || room.settings?.squadSize || 25;
+                const tPlayerCount = t.players?.length || 0;
+                const tSlots = tMaxSquad - tPlayerCount;
                 const tMaxBid = calculateMaxBid(
-                  t.purse,
-                  t.players.length,
-                  tMaxSquad,
-                  lowestBasePrice,
-                  tMinSquad
+                  {
+                    id: t.id,
+                    name: t.name,
+                    shortName: t.shortName,
+                    purse: t.purse,
+                    spent: t.spent || 0,
+                    players: t.players || [],
+                  } as Team,
+                  tMaxSquad
                 );
+
+                const step = room.settings?.bidStep || 0.5;
                 const nextStepAmount = Number(
                   (isFirstBid
                     ? lot?.player.basePrice || 0
-                    : (currentBid || 0) + room.settings.bidStep
+                    : (currentBid || 0) + step
                   ).toFixed(2)
                 );
+
                 const canPaddleBid =
-                  lot &&
+                  Boolean(lot) &&
                   tSlots > 0 &&
-                  lot.leadingTeamId !== t.id &&
+                  lot?.leadingTeamId !== t.id &&
                   nextStepAmount <= tMaxBid &&
                   nextStepAmount <= t.purse;
 
@@ -814,14 +728,14 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
             </div>
           </div>
 
-          {/* Sold / Unsold / Undo Control Buttons */}
+          {/* Sold / Unsold / Undo Buttons */}
           <div className="grid grid-cols-3 gap-2 pt-1 border-t border-[var(--color-border)]">
             <button
               type="button"
               disabled={hostActionLoading || !lot || lot.currentBid === null || !lot.leadingTeamId}
               onClick={handleHostSold}
-              className={`min-h-[46px] py-2 px-3 rounded-xl font-display text-base font-black uppercase tracking-wider transition shadow-sm flex items-center justify-center space-x-1 ${
-                lot && lot.currentBid !== null && lot.leadingTeamId && !hostActionLoading
+              className={`min-h-[44px] py-2 px-3 rounded-xl font-display text-base font-black uppercase tracking-wider transition shadow-sm flex items-center justify-center space-x-1 ${
+                Boolean(lot && lot.currentBid !== null && lot.leadingTeamId && !hostActionLoading)
                   ? 'bg-[var(--color-accent)] hover:bg-[var(--color-accent-hover)] text-white cursor-pointer active:scale-95'
                   : 'bg-gray-300 dark:bg-gray-800 text-gray-500 cursor-not-allowed'
               }`}
@@ -834,7 +748,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
               type="button"
               disabled={hostActionLoading || !lot}
               onClick={handleHostUnsold}
-              className="min-h-[46px] py-2 px-3 rounded-xl bg-[var(--color-surface-subtle)] hover:bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-text-main)] font-display text-base font-bold uppercase tracking-wider transition flex items-center justify-center space-x-1 cursor-pointer active:scale-95"
+              className="min-h-[44px] py-2 px-3 rounded-xl bg-[var(--color-surface-subtle)] hover:bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-text-main)] font-display text-base font-bold uppercase tracking-wider transition flex items-center justify-center space-x-1 cursor-pointer active:scale-95"
             >
               <XCircle className="w-4 h-4 text-gray-500" />
               <span>UNSOLD</span>
@@ -842,12 +756,12 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
 
             <button
               type="button"
-              disabled={hostActionLoading || !lot || lot.bidHistory.length === 0}
+              disabled={hostActionLoading || !lot || (lot.bidHistory?.length || 0) === 0}
               onClick={handleHostUndo}
-              className={`min-h-[46px] py-2 px-3 rounded-xl border text-xs font-bold uppercase tracking-wider transition flex items-center justify-center space-x-1 ${
-                lot && lot.bidHistory.length > 0 && !hostActionLoading
-                  ? 'bg-amber-100 dark:bg-amber-950/60 border-amber-300 dark:border-amber-700 text-amber-900 dark:text-amber-200 hover:bg-amber-200 cursor-pointer active:scale-95'
-                  : 'bg-gray-200 dark:bg-gray-800/40 border-gray-300 dark:border-gray-800 text-gray-400 cursor-not-allowed'
+              className={`min-h-[44px] py-2 px-3 rounded-xl border text-xs font-bold uppercase tracking-wider transition flex items-center justify-center space-x-1 ${
+                Boolean(lot && (lot.bidHistory?.length || 0) > 0 && !hostActionLoading)
+                  ? 'bg-amber-100 dark:bg-amber-950/40 border-amber-300 dark:border-amber-700 text-amber-900 dark:text-amber-200 hover:bg-amber-200 cursor-pointer active:scale-95'
+                  : 'bg-gray-200 dark:bg-gray-800 border-gray-300 dark:border-gray-800 text-gray-400 cursor-not-allowed'
               }`}
             >
               <RotateCcw className="w-3.5 h-3.5" />
