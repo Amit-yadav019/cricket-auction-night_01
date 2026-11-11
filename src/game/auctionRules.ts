@@ -199,24 +199,59 @@ export function pickRandomBalanced(pool: Player[], totalCount: number): Player[]
   };
 
   const shuffle = <T>(arr: T[]): T[] => [...arr].sort(() => Math.random() - 0.5);
+  const roles: PlayerRole[] = ['BAT', 'WK', 'AR', 'BOWL'];
+  const totalPoolSize = pool.length;
 
-  const ratios = {
-    BAT: Math.round(totalCount * 0.32),
-    BOWL: Math.round(totalCount * 0.34),
-    AR: Math.round(totalCount * 0.22),
-    WK: Math.max(1, totalCount - Math.round(totalCount * 0.32) - Math.round(totalCount * 0.34) - Math.round(totalCount * 0.22)),
-  };
+  // 1. Calculate ideal fractional quota according to exact percentage representation in the pool
+  const targets = roles.map((role) => ({
+    role,
+    fractional: (byRole[role].length / totalPoolSize) * totalCount,
+    allocated: Math.floor((byRole[role].length / totalPoolSize) * totalCount),
+  }));
 
-  const selected: Player[] = [];
-  (Object.keys(byRole) as PlayerRole[]).forEach((role) => {
-    const shuffled = shuffle(byRole[role]);
-    selected.push(...shuffled.slice(0, ratios[role]));
-  });
-
-  if (selected.length < totalCount) {
-    const remaining = pool.filter((p) => !selected.some((s) => s.id === p.id));
-    selected.push(...shuffle(remaining).slice(0, totalCount - selected.length));
+  // 2. Guarantee >= 2 per role when pool size and totalCount permit
+  if (totalCount >= 8) {
+    targets.forEach((t) => {
+      if (t.allocated < 2 && byRole[t.role].length >= 2) {
+        t.allocated = 2;
+      }
+    });
   }
 
-  return selected.slice(0, totalCount);
+  // 3. Reconcile remainder to guarantee exact totalCount sum
+  let currentAllocated = targets.reduce((sum, t) => sum + t.allocated, 0);
+
+  // If minimum guarantees caused over-allocation, decrement largest surplus
+  while (currentAllocated > totalCount) {
+    targets.sort((a, b) => (a.fractional - a.allocated) - (b.fractional - b.allocated));
+    for (const t of targets) {
+      if (t.allocated > 2 && currentAllocated > totalCount) {
+        t.allocated--;
+        currentAllocated--;
+      }
+    }
+  }
+
+  // If under-allocated, distribute to highest fractional remainders (Hamilton-Hare)
+  while (currentAllocated < totalCount) {
+    targets.sort((a, b) => {
+      const remA = a.fractional - a.allocated;
+      const remB = b.fractional - b.allocated;
+      return remB - remA;
+    });
+
+    const candidate = targets.find((t) => t.allocated < byRole[t.role].length);
+    if (!candidate) break;
+    candidate.allocated++;
+    currentAllocated++;
+  }
+
+  // 4. Sample randomly without replacement from each role partition
+  const selected: Player[] = [];
+  targets.forEach(({ role, allocated }) => {
+    const shuffledRole = shuffle(byRole[role]);
+    selected.push(...shuffledRole.slice(0, allocated));
+  });
+
+  return shuffle(selected);
 }
