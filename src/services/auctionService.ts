@@ -1,62 +1,64 @@
 import {
   doc,
   runTransaction,
-  onSnapshot,
-  setDoc,
+  getDoc,
   updateDoc,
-  DocumentSnapshot,
+  setDoc,
+  onSnapshot,
 } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../firebase';
+import { db } from '../firebase';
 import {
   Player,
   Team,
-  CurrentLot,
   AuctionSettings,
-  validateBid,
   calculateMaxBid,
-  isAuctionComplete,
+  calculateNextValidBid,
 } from '../game/auctionRules';
 
 export interface RoomData {
-  id: string;
   code: string;
-  hostToken: string;
-  hostHeartbeat: number;
-  status: 'lobby' | 'auction' | 'round_ended' | 'completed';
-  settings: AuctionSettings;
+  roomCode?: string;
+  status: 'lobby' | 'active' | 'paused' | 'round_ended' | 'completed';
+  hostUid?: string;
+  hostToken?: string;
+  hostHeartbeat?: number;
   round: number;
-  teams: Team[];
-  allPlayers: Player[];
-  activePlayerIndex: number;
-  currentLot: CurrentLot | null;
-  lastResult: {
+  settings: AuctionSettings;
+  teams: Team[] | Record<string, Team>;
+  playerPool?: Player[];
+  allPlayers?: Player[];
+  currentPlayerIndex: number;
+  currentLot: {
+    player: Player;
+    currentBid: number | null;
+    leadingTeamId?: string;
+    leadingTeamName?: string;
+    bidHistory: Array<{
+      teamId: string;
+      teamName: string;
+      amount: number;
+      timestamp: number;
+    }>;
+  } | null;
+  lastResult?: {
     type: 'SOLD' | 'UNSOLD';
     playerName: string;
-    teamName?: string;
-    amount?: number;
+    teamName: string;
+    amount: number;
     timestamp: number;
-  } | null;
-  auctionLog: {
-    id: string;
-    timestamp: number;
-    message: string;
-    type: 'bid' | 'sold' | 'unsold' | 'undo' | 'system';
-  }[];
-  lastActionHostToken?: string;
-  createdAt: number;
-  updatedAt: number;
+  };
 }
 
-const ROOM_CODE_CHARS = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
-
+// ----------------------------------------------------------------------------
+// Token & Code Generators
+// ----------------------------------------------------------------------------
 export function generateRoomCode(): string {
-  let code = '';
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let result = '';
   for (let i = 0; i < 5; i++) {
-    code += ROOM_CODE_CHARS.charAt(
-      Math.floor(Math.random() * ROOM_CODE_CHARS.length)
-    );
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
   }
-  return code;
+  return result;
 }
 
 export function generateHostToken(): string {
@@ -67,87 +69,75 @@ export function generateOwnerToken(): string {
   return `owner_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
 }
 
-export function removeUndefined<T>(obj: T): T {
-  if (obj === null || obj === undefined) return obj;
-  if (Array.isArray(obj)) {
-    return obj.map(removeUndefined) as any;
+// ----------------------------------------------------------------------------
+// Safe Team Helpers
+// ----------------------------------------------------------------------------
+function findTeamSafely(rawTeams: any, teamId: string): { team: Team | undefined; index: number | string } {
+  if (!rawTeams || !teamId) return { team: undefined, index: -1 };
+
+  if (Array.isArray(rawTeams)) {
+    const idx = rawTeams.findIndex((t: Team) => t && (t.id === teamId || t.name === teamId));
+    return { team: rawTeams[idx], index: idx };
   }
-  if (typeof obj === 'object') {
-    const cleaned: any = {};
-    for (const [k, v] of Object.entries(obj)) {
-      if (v !== undefined) {
-        cleaned[k] = removeUndefined(v);
-      }
-    }
-    return cleaned;
+
+  if (rawTeams[teamId]) {
+    return { team: rawTeams[teamId], index: teamId };
   }
-  return obj;
+
+  const entries = Object.entries(rawTeams);
+  const found = entries.find(([_, t]: [string, any]) => t && (t.id === teamId || t.name === teamId));
+  if (found) {
+    return { team: found[1] as Team, index: found[0] };
+  }
+
+  return { team: undefined, index: -1 };
 }
 
-function safeTxUpdate(tx: any, ref: any, data: any) {
-  tx.update(ref, removeUndefined(data));
+function resolveRoomCode(passedCode?: string): string {
+  if (passedCode && passedCode.trim()) return passedCode.trim();
+  const urlParams = new URLSearchParams(window.location.search);
+  const fromUrl = urlParams.get('room');
+  return fromUrl ? fromUrl.trim() : '';
 }
 
-/**
- * Creates a new auction room doc in Firestore.
- */
+// ----------------------------------------------------------------------------
+// Room Lifecycle: Create, Subscribe, Heartbeat
+// ----------------------------------------------------------------------------
 export async function createAuctionRoom(
-  code: string,
-  hostToken: string,
+  roomCode: string,
   settings: AuctionSettings,
-  teams: Team[],
-  players: Player[]
-): Promise<string> {
-  const path = `rooms/${code}`;
-  const now = Date.now();
-
-  const initialRoom: RoomData = {
-    id: code,
-    code,
-    hostToken,
-    hostHeartbeat: now,
-    status: 'lobby',
-    settings,
-    round: 1,
-    teams,
-    allPlayers: players,
-    activePlayerIndex: 0,
-    currentLot: null,
-    lastResult: null,
-    auctionLog: [
-      {
-        id: `log_${now}`,
-        timestamp: now,
-        message: `Auction room created with ${teams.length} teams and ${players.length} players.`,
-        type: 'system',
-      },
-    ],
-    createdAt: now,
-    updatedAt: now,
-  };
-
+  initialTeams: Team[],
+  players: Player[],
+  hostToken: string
+): Promise<{ success: boolean; error?: string }> {
   try {
-    const sanitized = removeUndefined(initialRoom);
-    await setDoc(doc(db, 'rooms', code), sanitized);
-    return code;
-  } catch (error) {
-    handleFirestoreError(error, OperationType.CREATE, path);
+    const roomRef = doc(db, 'rooms', roomCode);
+    const roomData: RoomData = {
+      code: roomCode,
+      roomCode,
+      status: 'lobby',
+      hostToken,
+      hostHeartbeat: Date.now(),
+      round: 1,
+      settings,
+      teams: initialTeams,
+      playerPool: players,
+      allPlayers: players,
+      currentPlayerIndex: 0,
+      currentLot: null,
+    };
+    await setDoc(roomRef, roomData);
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Failed to create room.' };
   }
 }
 
-/**
- * Subscribes to real-time room updates via onSnapshot.
- */
-export function subscribeToRoom(
-  code: string,
-  onUpdate: (room: RoomData | null) => void,
-  onError: (error: Error) => void
-): () => void {
-  const roomRef = doc(db, 'rooms', code);
-
+export function subscribeToRoom(roomCode: string, onUpdate: (data: RoomData | null) => void) {
+  const roomRef = doc(db, 'rooms', roomCode);
   return onSnapshot(
     roomRef,
-    (snap: DocumentSnapshot) => {
+    (snap) => {
       if (snap.exists()) {
         onUpdate(snap.data() as RoomData);
       } else {
@@ -155,808 +145,529 @@ export function subscribeToRoom(
       }
     },
     (error) => {
-      console.error('onSnapshot error:', error);
-      onError(error);
+      console.error('Room subscription error:', error);
+      onUpdate(null);
     }
   );
 }
 
-/**
- * Updates host heartbeat timestamp.
- */
-export async function sendHostHeartbeat(code: string, hostToken: string): Promise<void> {
+export async function sendHostHeartbeat(roomCode: string, hostToken?: string): Promise<void> {
+  const code = resolveRoomCode(roomCode);
+  if (!code) return;
   try {
     const roomRef = doc(db, 'rooms', code);
     await updateDoc(roomRef, {
       hostHeartbeat: Date.now(),
-      updatedAt: Date.now(),
     });
-  } catch (err) {
-    // Non-fatal background heartbeat error
-    console.warn('Heartbeat error:', err);
+  } catch {
+    // Silent ignore for heartbeats
   }
 }
 
-/**
- * Claims a team for an owner in lobby.
- */
-export async function claimTeam(
-  code: string,
+// ----------------------------------------------------------------------------
+// Lobby Actions: Claim, Release, Start
+// ----------------------------------------------------------------------------
+export async function claimTeamTransaction(
+  roomCode: string,
   teamId: string,
   ownerName: string,
   ownerToken: string
 ): Promise<{ success: boolean; error?: string }> {
+  const code = resolveRoomCode(roomCode);
   const roomRef = doc(db, 'rooms', code);
-
   try {
-    await runTransaction(db, async (tx) => {
-      const snap = await tx.get(roomRef);
+    return await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(roomRef);
       if (!snap.exists()) throw new Error('Room not found');
+
       const room = snap.data() as RoomData;
-
-      if (room.status !== 'lobby') {
-        throw new Error('Auction already started');
-      }
-
-      const team = room.teams.find((t) => t.id === teamId);
+      const { team, index } = findTeamSafely(room.teams, teamId);
       if (!team) throw new Error('Team not found');
 
-      if (team.claimedByOwnerName && team.ownerToken !== ownerToken) {
-        throw new Error('This team was just claimed by someone else!');
+      let updatedTeams: any;
+      if (Array.isArray(room.teams)) {
+        updatedTeams = room.teams.map((t) => {
+          if (t.id === teamId) {
+            return {
+              ...t,
+              claimedByOwnerName: ownerName,
+              ownerToken,
+            };
+          }
+          return t;
+        });
+      } else {
+        updatedTeams = { ...room.teams };
+        if (index !== -1) {
+          updatedTeams[index] = {
+            ...team,
+            claimedByOwnerName: ownerName,
+            ownerToken,
+          };
+        }
       }
 
-      // Check if user already claimed another team
-      const existingTeam = room.teams.find((t) => t.ownerToken === ownerToken && t.id !== teamId);
-      if (existingTeam) {
-        existingTeam.claimedByOwnerName = undefined;
-        existingTeam.ownerToken = undefined;
-      }
-
-      team.claimedByOwnerName = ownerName;
-      team.ownerToken = ownerToken;
-
-      const now = Date.now();
-      const updatedLog = [
-        {
-          id: `log_${now}`,
-          timestamp: now,
-          message: `${ownerName} claimed ${team.name}.`,
-          type: 'system' as const,
-        },
-        ...room.auctionLog.slice(0, 40),
-      ];
-
-      safeTxUpdate(tx, roomRef, {
-        teams: room.teams,
-        auctionLog: updatedLog,
-        updatedAt: now,
-      });
+      transaction.update(roomRef, { teams: updatedTeams });
+      return { success: true };
     });
-
-    return { success: true };
   } catch (err: any) {
-    return { success: false, error: err.message || 'Failed to claim team' };
+    return { success: false, error: err?.message || 'Failed to claim team.' };
   }
 }
 
-/**
- * Host releases a team's phone/owner.
- */
-export async function releaseTeam(
-  code: string,
+// Alias for LobbyView and SquadsView
+export const claimTeam = claimTeamTransaction;
+
+export async function releaseTeamTransaction(
+  roomCode: string,
   teamId: string,
-  hostToken: string
+  ownerToken: string
 ): Promise<{ success: boolean; error?: string }> {
+  const code = resolveRoomCode(roomCode);
   const roomRef = doc(db, 'rooms', code);
-
   try {
-    await runTransaction(db, async (tx) => {
-      const snap = await tx.get(roomRef);
+    return await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(roomRef);
       if (!snap.exists()) throw new Error('Room not found');
-      const room = snap.data() as RoomData;
 
-      if (room.hostToken !== hostToken) {
-        throw new Error('Unauthorized: Host only action');
+      const room = snap.data() as RoomData;
+      let updatedTeams: any;
+      if (Array.isArray(room.teams)) {
+        updatedTeams = room.teams.map((t) => {
+          if (t.id === teamId && (t.ownerToken === ownerToken || !ownerToken)) {
+            const { claimedByOwnerName, ownerToken: tok, ...rest } = t;
+            return rest as Team;
+          }
+          return t;
+        });
+      } else {
+        updatedTeams = { ...room.teams };
+        const { team, index } = findTeamSafely(room.teams, teamId);
+        if (team && index !== -1) {
+          const { claimedByOwnerName, ownerToken: tok, ...rest } = team;
+          updatedTeams[index] = rest;
+        }
       }
 
-      const team = room.teams.find((t) => t.id === teamId);
-      if (!team) throw new Error('Team not found');
-
-      const prevOwner = team.claimedByOwnerName || 'Owner';
-      team.claimedByOwnerName = undefined;
-      team.ownerToken = undefined;
-
-      const now = Date.now();
-      const updatedLog = [
-        {
-          id: `log_${now}`,
-          timestamp: now,
-          message: `Host released ${team.name} (previously ${prevOwner}).`,
-          type: 'system' as const,
-        },
-        ...room.auctionLog.slice(0, 40),
-      ];
-
-      safeTxUpdate(tx, roomRef, {
-        teams: room.teams,
-        auctionLog: updatedLog,
-        lastActionHostToken: hostToken,
-        updatedAt: now,
-      });
+      transaction.update(roomRef, { teams: updatedTeams });
+      return { success: true };
     });
-
-    return { success: true };
   } catch (err: any) {
-    return { success: false, error: err.message || 'Failed to release team' };
+    return { success: false, error: err?.message || 'Failed to release team.' };
   }
 }
 
-/**
- * Host starts bidding from Lobby.
- */
-export async function startAuction(
-  code: string,
-  hostToken: string
-): Promise<{ success: boolean; error?: string }> {
-  const roomRef = doc(db, 'rooms', code);
+// Alias for LobbyView
+export const releaseTeam = releaseTeamTransaction;
 
-  try {
-    await runTransaction(db, async (tx) => {
-      const snap = await tx.get(roomRef);
-      if (!snap.exists()) throw new Error('Room not found');
-      const room = snap.data() as RoomData;
-
-      if (room.hostToken !== hostToken) {
-        throw new Error('Unauthorized: Host only action');
-      }
-
-      if (room.allPlayers.length === 0) {
-        throw new Error('No players selected for auction');
-      }
-
-      const firstPlayer = room.allPlayers[0];
-      firstPlayer.status = 'active';
-
-      const now = Date.now();
-      const currentLot: CurrentLot = {
-        playerIndex: 0,
-        player: firstPlayer,
-        currentBid: null,
-        leadingTeamId: null,
-        leadingTeamName: null,
-        bidHistory: [],
-        startedAt: now,
-      };
-
-      const updatedLog = [
-        {
-          id: `log_${now}`,
-          timestamp: now,
-          message: `Auction started! First lot: ${firstPlayer.name} (${firstPlayer.role}, Base ₹${firstPlayer.basePrice} ${room.settings.purseUnit}).`,
-          type: 'system' as const,
-        },
-        ...room.auctionLog.slice(0, 40),
-      ];
-
-      safeTxUpdate(tx, roomRef, {
-        status: 'auction',
-        activePlayerIndex: 0,
-        currentLot,
-        allPlayers: room.allPlayers,
-        auctionLog: updatedLog,
-        lastActionHostToken: hostToken,
-        updatedAt: now,
-      });
-    });
-
-    return { success: true };
-  } catch (err: any) {
-    return { success: false, error: err.message || 'Failed to start auction' };
-  }
-}
-
-/**
- * Places a bid through a Firestore TRANSACTION.
- * Re-reads current auction doc and validates every rule before writing.
- * If two owners bid simultaneously, first committed wins and other gets "Someone bid first, try again."
- */
-export async function placeBidTransaction(
-  code: string,
-  teamId: string,
-  proposedAmount: number,
-  raiseMultiplier: number,
-  clientCurrentBid: number | null,
-  clientPlayerId: string,
+export async function startBiddingTransaction(
+  roomCode: string,
   hostToken?: string
 ): Promise<{ success: boolean; error?: string }> {
+  const code = resolveRoomCode(roomCode);
   const roomRef = doc(db, 'rooms', code);
-
   try {
-    await runTransaction(db, async (tx) => {
-      const snap = await tx.get(roomRef);
+    return await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(roomRef);
       if (!snap.exists()) throw new Error('Room not found');
+
       const room = snap.data() as RoomData;
+      const pool = room.playerPool || room.allPlayers || [];
+      if (pool.length === 0) throw new Error('No players found in room pool.');
 
-      if (room.status !== 'auction') {
-        throw new Error('Auction is not currently active');
-      }
+      const firstPlayer = pool[0];
+      const initialLot = {
+        player: firstPlayer,
+        currentBid: null,
+        bidHistory: [],
+      };
 
-      const lot = room.currentLot;
-      if (!lot) {
-        throw new Error('No active player up for auction');
-      }
-
-      // Check if another bid committed while user was tapping
-      if (lot.currentBid !== clientCurrentBid || lot.player.id !== clientPlayerId) {
-        throw new Error('Someone bid first, try again.');
-      }
-
-      const team = room.teams.find((t) => t.id === teamId);
-      if (!team) throw new Error('Team not found');
-
-      const lowestBasePrice = Math.min(
-        ...room.allPlayers.map((p) => p.basePrice),
-        0.5
-      );
-
-      const maxSquad = room.settings.maxSquadSize || room.settings.squadSize;
-      const minSquad = room.settings.minSquadSize || maxSquad;
-
-      const validation = validateBid({
-        teamId: team.id,
-        teamPurse: team.purse,
-        teamPlayerCount: team.players.length,
-        maxSquadSize: maxSquad,
-        minSquadSize: minSquad,
-        lowestBasePrice,
-        currentBid: lot.currentBid,
-        leadingTeamId: lot.leadingTeamId,
-        basePrice: lot.player.basePrice,
-        bidStep: room.settings.bidStep,
-        proposedAmount,
-        currentPlayerId: lot.player.id,
-        targetPlayerId: clientPlayerId,
+      transaction.update(roomRef, {
+        status: 'active',
+        currentPlayerIndex: 0,
+        currentLot: initialLot,
       });
 
-      if (!validation.valid) {
-        throw new Error(validation.reason || 'Invalid bid');
-      }
-
-      const now = Date.now();
-      const newBidItem = {
-        teamId: team.id,
-        teamName: team.name,
-        amount: proposedAmount,
-        timestamp: now,
-        raiseMultiplier,
-      };
-
-      const updatedHistory = [newBidItem, ...lot.bidHistory];
-      const updatedLot: CurrentLot = {
-        ...lot,
-        currentBid: proposedAmount,
-        leadingTeamId: team.id,
-        leadingTeamName: team.name,
-        bidHistory: updatedHistory,
-      };
-
-      const logMsg =
-        lot.currentBid === null
-          ? `${team.name} opened with base bid ₹${proposedAmount} ${room.settings.purseUnit}`
-          : `${team.name} raised to ₹${proposedAmount} ${room.settings.purseUnit} (+${raiseMultiplier}x)`;
-
-      const updatedLog = [
-        {
-          id: `log_${now}`,
-          timestamp: now,
-          message: logMsg,
-          type: 'bid' as const,
-        },
-        ...room.auctionLog.slice(0, 40),
-      ];
-
-      const updatePayload: any = {
-        currentLot: updatedLot,
-        auctionLog: updatedLog,
-        updatedAt: now,
-      };
-
-      if (hostToken && room.hostToken === hostToken) {
-        updatePayload.lastActionHostToken = hostToken;
-      }
-
-      safeTxUpdate(tx, roomRef, updatePayload);
+      return { success: true };
     });
-
-    return { success: true };
   } catch (err: any) {
-    const msg = err.message || 'Failed to place bid';
-    if (msg.includes('Someone bid first') || msg.includes('no longer active')) {
-      return { success: false, error: 'Someone bid first, try again.' };
-    }
-    return { success: false, error: msg };
+    return { success: false, error: err?.message || 'Failed to start bidding.' };
   }
 }
 
-/**
- * Host marks current player as SOLD through a Firestore TRANSACTION.
- */
-export async function markSoldTransaction(
-  code: string,
-  hostToken: string
+// Alias for LobbyView
+export const startAuction = startBiddingTransaction;
+
+// ----------------------------------------------------------------------------
+// Auction Ring Transactions
+// ----------------------------------------------------------------------------
+export async function placeBidTransaction(
+  roomCodeInput: string,
+  teamId: string,
+  bidAmount: number,
+  multiplier: number,
+  expectedCurrentBid: number | null,
+  expectedPlayerId: string,
+  hostToken?: string
 ): Promise<{ success: boolean; error?: string }> {
-  const roomRef = doc(db, 'rooms', code);
+  const roomCode = resolveRoomCode(roomCodeInput);
+
+  if (!roomCode) {
+    return { success: false, error: 'Room code could not be determined.' };
+  }
+  if (!teamId) {
+    return { success: false, error: 'Please choose or claim a team to bid.' };
+  }
+
+  const roomRef = doc(db, 'rooms', roomCode);
 
   try {
-    await runTransaction(db, async (tx) => {
-      const snap = await tx.get(roomRef);
-      if (!snap.exists()) throw new Error('Room not found');
-      const room = snap.data() as RoomData;
+    const result = await runTransaction(db, async (transaction) => {
+      const roomSnap = await transaction.get(roomRef);
+      if (!roomSnap.exists()) {
+        throw new Error(`Room "${roomCode}" not found in database.`);
+      }
 
-      if (room.hostToken !== hostToken) {
-        throw new Error('Unauthorized: Host only action');
+      const room = roomSnap.data() as RoomData;
+
+      if (room.status !== 'active') {
+        throw new Error('Auction is not currently accepting bids.');
       }
 
       const lot = room.currentLot;
-      if (!lot || lot.currentBid === null || !lot.leadingTeamId) {
-        throw new Error('Cannot sell: no active bids on this player');
+      if (!lot || !lot.player) {
+        throw new Error('No active player on the podium.');
       }
 
-      const winningTeam = room.teams.find((t) => t.id === lot.leadingTeamId);
-      if (!winningTeam) throw new Error('Winning team not found');
+      const { team: biddingTeam } = findTeamSafely(room.teams, teamId);
+      if (!biddingTeam) {
+        throw new Error(`Team could not be found.`);
+      }
 
-      const salePrice = lot.currentBid;
+      const maxSquad = room.settings?.maxSquadSize || room.settings?.squadSize || 25;
+      const currentSquadCount = biddingTeam.players?.length || 0;
+      if (currentSquadCount >= maxSquad) {
+        throw new Error(`${biddingTeam.name} squad is already full.`);
+      }
+
+      const minRequired =
+        lot.currentBid === null
+          ? lot.player.basePrice
+          : calculateNextValidBid(lot.currentBid, lot.player.basePrice);
+
+      if (bidAmount < minRequired) {
+        throw new Error(`Bid must be at least ₹${minRequired} Cr.`);
+      }
+
+      if (bidAmount > biddingTeam.purse) {
+        throw new Error(`Insufficient purse balance (₹${biddingTeam.purse} Cr available).`);
+      }
+
+      const bidRecord = {
+        teamId: biddingTeam.id,
+        teamName: biddingTeam.name,
+        amount: Number(bidAmount.toFixed(2)),
+        timestamp: Date.now(),
+      };
+
+      const existingHistory = Array.isArray(lot.bidHistory) ? lot.bidHistory : [];
+      const updatedBidHistory = [bidRecord, ...existingHistory].slice(0, 20);
+
+      transaction.update(roomRef, {
+        'currentLot.currentBid': Number(bidAmount.toFixed(2)),
+        'currentLot.leadingTeamId': biddingTeam.id,
+        'currentLot.leadingTeamName': biddingTeam.name,
+        'currentLot.bidHistory': updatedBidHistory,
+      });
+
+      return { success: true };
+    });
+
+    return result;
+  } catch (error: any) {
+    return {
+      success: false,
+      error: error?.message || 'Bid could not be placed.',
+    };
+  }
+}
+
+export async function markSoldTransaction(
+  roomCodeInput: string,
+  hostToken: string
+): Promise<{ success: boolean; error?: string }> {
+  const roomCode = resolveRoomCode(roomCodeInput);
+  const roomRef = doc(db, 'rooms', roomCode);
+
+  try {
+    return await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(roomRef);
+      if (!snap.exists()) throw new Error('Room not found');
+
+      const room = snap.data() as RoomData;
+      const lot = room.currentLot;
+
+      if (!lot || lot.currentBid === null || !lot.leadingTeamId) {
+        throw new Error('Cannot mark sold without an active leading bid.');
+      }
+
+      const winningTeamId = lot.leadingTeamId;
+      const winningAmount = lot.currentBid;
       const soldPlayer: Player = {
         ...lot.player,
         status: 'sold',
-        soldPrice: salePrice,
-        soldToTeamId: winningTeam.id,
+        soldPrice: winningAmount,
+        soldToTeamId: winningTeamId,
       };
 
-      winningTeam.purse = Number((winningTeam.purse - salePrice).toFixed(2));
-      winningTeam.spent = Number((winningTeam.spent + salePrice).toFixed(2));
-      winningTeam.players.push(soldPlayer);
-
-      // Update player in allPlayers array
-      room.allPlayers[lot.playerIndex] = soldPlayer;
-
-      const now = Date.now();
-      const lastResult = {
-        type: 'SOLD' as const,
-        playerName: soldPlayer.name,
-        teamName: winningTeam.name,
-        amount: salePrice,
-        timestamp: now,
-      };
-
-      const updatedLog = [
-        {
-          id: `log_${now}`,
-          timestamp: now,
-          message: `🔨 SOLD! ${soldPlayer.name} to ${winningTeam.name} for ₹${salePrice} ${room.settings.purseUnit}.`,
-          type: 'sold' as const,
-        },
-        ...room.auctionLog.slice(0, 40),
-      ];
-
-      // Advance to next player
-      const nextIndex = lot.playerIndex + 1;
-      const remainingUnprocessed = room.allPlayers.length - nextIndex;
-      const maxSquad = room.settings.maxSquadSize || room.settings.squadSize;
-      const minSquad = room.settings.minSquadSize || maxSquad;
-      const isComplete = isAuctionComplete(
-        room.teams,
-        maxSquad,
-        remainingUnprocessed,
-        minSquad
-      );
-
-      if (isComplete || nextIndex >= room.allPlayers.length) {
-        const hasUnsold = room.allPlayers.some((p) => p.status === 'unsold');
-        const anySquadHasSlots = room.teams.some(
-          (t) => t.players.length < maxSquad
-        );
-
-        const newStatus =
-          hasUnsold && anySquadHasSlots ? 'round_ended' : 'completed';
-
-        safeTxUpdate(tx, roomRef, {
-          teams: room.teams,
-          allPlayers: room.allPlayers,
-          currentLot: null,
-          lastResult,
-          status: newStatus,
-          auctionLog: updatedLog,
-          lastActionHostToken: hostToken,
-          updatedAt: now,
+      let updatedTeams: any;
+      if (Array.isArray(room.teams)) {
+        updatedTeams = room.teams.map((t) => {
+          if (t && t.id === winningTeamId) {
+            return {
+              ...t,
+              purse: Number((t.purse - winningAmount).toFixed(2)),
+              spent: Number(((t.spent || 0) + winningAmount).toFixed(2)),
+              players: [...(t.players || []), soldPlayer],
+            };
+          }
+          return t;
         });
       } else {
-        const nextPlayer = room.allPlayers[nextIndex];
-        nextPlayer.status = 'active';
-
-        const nextLot: CurrentLot = {
-          playerIndex: nextIndex,
-          player: nextPlayer,
-          currentBid: null,
-          leadingTeamId: null,
-          leadingTeamName: null,
-          bidHistory: [],
-          startedAt: now,
-        };
-
-        safeTxUpdate(tx, roomRef, {
-          teams: room.teams,
-          allPlayers: room.allPlayers,
-          activePlayerIndex: nextIndex,
-          currentLot: nextLot,
-          lastResult,
-          auctionLog: updatedLog,
-          lastActionHostToken: hostToken,
-          updatedAt: now,
-        });
+        updatedTeams = { ...room.teams };
+        const { team: t, index: key } = findTeamSafely(room.teams, winningTeamId);
+        if (t && key !== -1) {
+          updatedTeams[key] = {
+            ...t,
+            purse: Number((t.purse - winningAmount).toFixed(2)),
+            spent: Number(((t.spent || 0) + winningAmount).toFixed(2)),
+            players: [...(t.players || []), soldPlayer],
+          };
+        }
       }
-    });
 
-    return { success: true };
+      const nextIndex = (room.currentPlayerIndex || 0) + 1;
+      const pool = room.playerPool || room.allPlayers || [];
+      const hasNext = nextIndex < pool.length;
+
+      const nextLot = hasNext
+        ? {
+            player: pool[nextIndex],
+            currentBid: null,
+            bidHistory: [],
+          }
+        : null;
+
+      transaction.update(roomRef, {
+        teams: updatedTeams,
+        currentPlayerIndex: nextIndex,
+        currentLot: nextLot,
+        status: hasNext ? 'active' : 'round_ended',
+        lastResult: {
+          type: 'SOLD',
+          playerName: soldPlayer.name,
+          teamName: lot.leadingTeamName || 'Unknown Team',
+          amount: winningAmount,
+          timestamp: Date.now(),
+        },
+      });
+
+      return { success: true };
+    });
   } catch (err: any) {
-    return { success: false, error: err.message || 'Failed to mark sold' };
+    return { success: false, error: err?.message || 'Failed to mark player as sold.' };
   }
 }
 
-/**
- * Host marks current player as UNSOLD through a Firestore TRANSACTION.
- */
 export async function markUnsoldTransaction(
-  code: string,
+  roomCodeInput: string,
   hostToken: string
 ): Promise<{ success: boolean; error?: string }> {
-  const roomRef = doc(db, 'rooms', code);
+  const roomCode = resolveRoomCode(roomCodeInput);
+  const roomRef = doc(db, 'rooms', roomCode);
 
   try {
-    await runTransaction(db, async (tx) => {
-      const snap = await tx.get(roomRef);
+    return await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(roomRef);
       if (!snap.exists()) throw new Error('Room not found');
+
       const room = snap.data() as RoomData;
-
-      if (room.hostToken !== hostToken) {
-        throw new Error('Unauthorized: Host only action');
-      }
-
       const lot = room.currentLot;
-      if (!lot) throw new Error('No active player');
+      if (!lot) throw new Error('No lot currently active');
 
       const unsoldPlayer: Player = {
         ...lot.player,
         status: 'unsold',
       };
 
-      room.allPlayers[lot.playerIndex] = unsoldPlayer;
+      const nextIndex = (room.currentPlayerIndex || 0) + 1;
+      const pool = room.playerPool || room.allPlayers || [];
+      const hasNext = nextIndex < pool.length;
 
-      const now = Date.now();
-      const lastResult = {
-        type: 'UNSOLD' as const,
-        playerName: unsoldPlayer.name,
-        timestamp: now,
-      };
+      const nextLot = hasNext
+        ? {
+            player: pool[nextIndex],
+            currentBid: null,
+            bidHistory: [],
+          }
+        : null;
 
-      const updatedLog = [
-        {
-          id: `log_${now}`,
-          timestamp: now,
-          message: `❌ UNSOLD: ${unsoldPlayer.name} passed with no bids.`,
-          type: 'unsold' as const,
+      transaction.update(roomRef, {
+        currentPlayerIndex: nextIndex,
+        currentLot: nextLot,
+        status: hasNext ? 'active' : 'round_ended',
+        lastResult: {
+          type: 'UNSOLD',
+          playerName: unsoldPlayer.name,
+          teamName: '',
+          amount: 0,
+          timestamp: Date.now(),
         },
-        ...room.auctionLog.slice(0, 40),
-      ];
+      });
 
-      const nextIndex = lot.playerIndex + 1;
-      const remainingUnprocessed = room.allPlayers.length - nextIndex;
-      const maxSquad = room.settings.maxSquadSize || room.settings.squadSize;
-      const minSquad = room.settings.minSquadSize || maxSquad;
-      const isComplete = isAuctionComplete(
-        room.teams,
-        maxSquad,
-        remainingUnprocessed,
-        minSquad
-      );
-
-      if (isComplete || nextIndex >= room.allPlayers.length) {
-        const hasUnsold = room.allPlayers.some((p) => p.status === 'unsold');
-        const anySquadHasSlots = room.teams.some(
-          (t) => t.players.length < maxSquad
-        );
-        const newStatus =
-          hasUnsold && anySquadHasSlots ? 'round_ended' : 'completed';
-
-        safeTxUpdate(tx, roomRef, {
-          allPlayers: room.allPlayers,
-          currentLot: null,
-          lastResult,
-          status: newStatus,
-          auctionLog: updatedLog,
-          lastActionHostToken: hostToken,
-          updatedAt: now,
-        });
-      } else {
-        const nextPlayer = room.allPlayers[nextIndex];
-        nextPlayer.status = 'active';
-
-        const nextLot: CurrentLot = {
-          playerIndex: nextIndex,
-          player: nextPlayer,
-          currentBid: null,
-          leadingTeamId: null,
-          leadingTeamName: null,
-          bidHistory: [],
-          startedAt: now,
-        };
-
-        safeTxUpdate(tx, roomRef, {
-          allPlayers: room.allPlayers,
-          activePlayerIndex: nextIndex,
-          currentLot: nextLot,
-          lastResult,
-          auctionLog: updatedLog,
-          lastActionHostToken: hostToken,
-          updatedAt: now,
-        });
-      }
+      return { success: true };
     });
-
-    return { success: true };
   } catch (err: any) {
-    return { success: false, error: err.message || 'Failed to mark unsold' };
+    return { success: false, error: err?.message || 'Failed to mark player as unsold.' };
   }
 }
 
-/**
- * Host undoes the last bid through a Firestore TRANSACTION.
- * Restores the previous leader and price.
- */
 export async function undoLastBidTransaction(
-  code: string,
+  roomCodeInput: string,
   hostToken: string
 ): Promise<{ success: boolean; error?: string }> {
-  const roomRef = doc(db, 'rooms', code);
+  const roomCode = resolveRoomCode(roomCodeInput);
+  const roomRef = doc(db, 'rooms', roomCode);
 
   try {
-    await runTransaction(db, async (tx) => {
-      const snap = await tx.get(roomRef);
+    return await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(roomRef);
       if (!snap.exists()) throw new Error('Room not found');
+
       const room = snap.data() as RoomData;
-
-      if (room.hostToken !== hostToken) {
-        throw new Error('Unauthorized: Host only action');
-      }
-
       const lot = room.currentLot;
-      if (!lot || lot.bidHistory.length === 0) {
-        throw new Error('No bids to undo');
+      if (!lot || !lot.bidHistory || lot.bidHistory.length === 0) {
+        throw new Error('No bids placed to undo on this lot.');
       }
 
-      const undoneBid = lot.bidHistory[0];
-      const remainingHistory = lot.bidHistory.slice(1);
+      const newHistory = lot.bidHistory.slice(1);
+      const previousBid = newHistory.length > 0 ? newHistory[0] : null;
 
-      let prevBid: number | null = null;
-      let prevLeaderId: string | null = null;
-      let prevLeaderName: string | null = null;
-
-      if (remainingHistory.length > 0) {
-        const prev = remainingHistory[0];
-        prevBid = prev.amount;
-        prevLeaderId = prev.teamId;
-        prevLeaderName = prev.teamName;
-      }
-
-      const updatedLot: CurrentLot = {
-        ...lot,
-        currentBid: prevBid,
-        leadingTeamId: prevLeaderId,
-        leadingTeamName: prevLeaderName,
-        bidHistory: remainingHistory,
-      };
-
-      const now = Date.now();
-      const updatedLog = [
-        {
-          id: `log_${now}`,
-          timestamp: now,
-          message: `↩️ Undid bid of ₹${undoneBid.amount} ${room.settings.purseUnit} by ${undoneBid.teamName}.`,
-          type: 'undo' as const,
-        },
-        ...room.auctionLog.slice(0, 40),
-      ];
-
-      safeTxUpdate(tx, roomRef, {
-        currentLot: updatedLot,
-        auctionLog: updatedLog,
-        lastActionHostToken: hostToken,
-        updatedAt: now,
+      transaction.update(roomRef, {
+        'currentLot.currentBid': previousBid ? previousBid.amount : null,
+        'currentLot.leadingTeamId': previousBid ? previousBid.teamId : null,
+        'currentLot.leadingTeamName': previousBid ? previousBid.teamName : null,
+        'currentLot.bidHistory': newHistory,
       });
-    });
 
-    return { success: true };
+      return { success: true };
+    });
   } catch (err: any) {
-    return { success: false, error: err.message || 'Failed to undo bid' };
+    return { success: false, error: err?.message || 'Undo bid failed.' };
   }
 }
 
-/**
- * Host re-auctions unsold players for another round.
- */
 export async function reAuctionUnsoldTransaction(
-  code: string,
+  roomCodeInput: string,
   hostToken: string
 ): Promise<{ success: boolean; error?: string }> {
-  const roomRef = doc(db, 'rooms', code);
+  const roomCode = resolveRoomCode(roomCodeInput);
+  const roomRef = doc(db, 'rooms', roomCode);
 
   try {
-    await runTransaction(db, async (tx) => {
-      const snap = await tx.get(roomRef);
-      if (!snap.exists()) throw new Error('Room not found');
-      const room = snap.data() as RoomData;
+    const snap = await getDoc(roomRef);
+    if (!snap.exists()) return { success: false, error: 'Room not found' };
 
-      if (room.hostToken !== hostToken) {
-        throw new Error('Unauthorized: Host only action');
-      }
+    const room = snap.data() as RoomData;
+    const pool = room.playerPool || room.allPlayers || [];
+    const unsold = pool.filter((p) => p.status === 'unsold');
 
-      const unsoldPlayers: Player[] = room.allPlayers
-        .filter((p) => p.status === 'unsold')
-        .map((p) => ({ ...p, status: 'pending' }));
+    if (unsold.length === 0) {
+      return { success: false, error: 'No unsold players left to re-auction.' };
+    }
 
-      if (unsoldPlayers.length === 0) {
-        throw new Error('No unsold players available for re-auction');
-      }
+    const resetUnsold = unsold.map((p) => ({ ...p, status: 'pending' as const }));
 
-      const nextRound = room.round + 1;
-      const firstPlayer = unsoldPlayers[0];
-      firstPlayer.status = 'active';
-
-      const now = Date.now();
-      const currentLot: CurrentLot = {
-        playerIndex: 0,
-        player: firstPlayer,
+    await updateDoc(roomRef, {
+      playerPool: resetUnsold,
+      currentPlayerIndex: 0,
+      round: (room.round || 1) + 1,
+      status: 'active',
+      currentLot: {
+        player: resetUnsold[0],
         currentBid: null,
-        leadingTeamId: null,
-        leadingTeamName: null,
         bidHistory: [],
-        startedAt: now,
-      };
-
-      const updatedLog = [
-        {
-          id: `log_${now}`,
-          timestamp: now,
-          message: `Round ${nextRound} started with ${unsoldPlayers.length} unsold players!`,
-          type: 'system' as const,
-        },
-        ...room.auctionLog.slice(0, 40),
-      ];
-
-      safeTxUpdate(tx, roomRef, {
-        status: 'auction',
-        round: nextRound,
-        allPlayers: unsoldPlayers,
-        activePlayerIndex: 0,
-        currentLot,
-        auctionLog: updatedLog,
-        lastActionHostToken: hostToken,
-        updatedAt: now,
-      });
+      },
     });
 
     return { success: true };
   } catch (err: any) {
-    return { success: false, error: err.message || 'Failed to re-auction' };
+    return { success: false, error: err?.message || 'Failed to re-auction unsold players.' };
   }
 }
 
-/**
- * Host ends the auction manually.
- */
 export async function endAuctionTransaction(
-  code: string,
+  roomCodeInput: string,
   hostToken: string
 ): Promise<{ success: boolean; error?: string }> {
-  const roomRef = doc(db, 'rooms', code);
-
+  const roomCode = resolveRoomCode(roomCodeInput);
+  const roomRef = doc(db, 'rooms', roomCode);
   try {
-    await runTransaction(db, async (tx) => {
-      const snap = await tx.get(roomRef);
-      if (!snap.exists()) throw new Error('Room not found');
-      const room = snap.data() as RoomData;
-
-      if (room.hostToken !== hostToken) {
-        throw new Error('Unauthorized: Host only action');
-      }
-
-      const now = Date.now();
-      const updatedLog = [
-        {
-          id: `log_${now}`,
-          timestamp: now,
-          message: `Auction concluded by the host.`,
-          type: 'system' as const,
-        },
-        ...room.auctionLog.slice(0, 40),
-      ];
-
-      safeTxUpdate(tx, roomRef, {
-        status: 'completed',
-        currentLot: null,
-        auctionLog: updatedLog,
-        lastActionHostToken: hostToken,
-        updatedAt: now,
-      });
+    await updateDoc(roomRef, {
+      status: 'completed',
+      currentLot: null,
     });
-
     return { success: true };
   } catch (err: any) {
-    return { success: false, error: err.message || 'Failed to end auction' };
+    return { success: false, error: err?.message || 'Failed to conclude auction.' };
   }
 }
 
-/**
- * Host resets the auction (resets purses and squads, keeps team claims).
- */
 export async function resetAuctionTransaction(
-  code: string,
-  hostToken: string
+  roomCodeInput: string,
+  hostToken?: string
 ): Promise<{ success: boolean; error?: string }> {
-  const roomRef = doc(db, 'rooms', code);
-
+  const roomCode = resolveRoomCode(roomCodeInput);
+  const roomRef = doc(db, 'rooms', roomCode);
   try {
-    await runTransaction(db, async (tx) => {
-      const snap = await tx.get(roomRef);
-      if (!snap.exists()) throw new Error('Room not found');
-      const room = snap.data() as RoomData;
+    const snap = await getDoc(roomRef);
+    if (!snap.exists()) throw new Error('Room not found');
 
-      if (room.hostToken !== hostToken) {
-        throw new Error('Unauthorized: Host only action');
-      }
+    const room = snap.data() as RoomData;
+    const all = (room.allPlayers || []).map((p) => ({ ...p, status: 'pending' as const, soldPrice: undefined, soldToTeamId: undefined }));
 
-      // Reset team purses and squads, preserving claimedByOwnerName and ownerToken
-      const resetTeams = room.teams.map((t) => ({
+    let resetTeams: any;
+    if (Array.isArray(room.teams)) {
+      resetTeams = room.teams.map((t) => ({
         ...t,
-        purse: room.settings.pursePerTeam,
+        purse: room.settings?.pursePerTeam || 20,
         spent: 0,
         players: [],
       }));
-
-      // Reset all players to pending
-      const resetPlayers = room.allPlayers.map((p) => ({
-        ...p,
-        status: 'pending' as const,
-        soldPrice: undefined,
-        soldToTeamId: undefined,
-      }));
-
-      const now = Date.now();
-      const updatedLog = [
-        {
-          id: `log_${now}`,
-          timestamp: now,
-          message: `Auction reset by host. Team claims kept.`,
-          type: 'system' as const,
-        },
-      ];
-
-      safeTxUpdate(tx, roomRef, {
-        status: 'lobby',
-        round: 1,
-        teams: resetTeams,
-        allPlayers: resetPlayers,
-        activePlayerIndex: 0,
-        currentLot: null,
-        lastResult: null,
-        auctionLog: updatedLog,
-        lastActionHostToken: hostToken,
-        updatedAt: now,
+    } else {
+      resetTeams = {};
+      Object.entries(room.teams || {}).forEach(([k, t]) => {
+        resetTeams[k] = {
+          ...t,
+          purse: room.settings?.pursePerTeam || 20,
+          spent: 0,
+          players: [],
+        };
       });
+    }
+
+    await updateDoc(roomRef, {
+      status: 'lobby',
+      round: 1,
+      currentPlayerIndex: 0,
+      currentLot: null,
+      lastResult: null,
+      playerPool: all,
+      teams: resetTeams,
     });
 
     return { success: true };
   } catch (err: any) {
-    return { success: false, error: err.message || 'Failed to reset auction' };
+    return { success: false, error: err?.message || 'Failed to reset auction.' };
   }
 }
