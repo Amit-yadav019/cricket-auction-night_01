@@ -1,133 +1,174 @@
 import React, { useState } from 'react';
-import { Copy, Check, Share2, Volume2, VolumeX, BarChart3 } from 'lucide-react';
+import {
+  Share2,
+  Copy,
+  Check,
+  FileText,
+  Volume2,
+  VolumeX,
+} from 'lucide-react';
 import { RoomData } from '../services/auctionService';
+import { sound } from '../services/soundService';
 
 interface HeaderProps {
-  room: RoomData | null;
+  room: RoomData;
   isHost: boolean;
-  onToggleSound?: () => void;
-  soundEnabled?: boolean;
   onOpenSummary?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
   room,
   isHost,
-  onToggleSound,
-  soundEnabled = true,
   onOpenSummary,
 }) => {
   const [copied, setCopied] = useState(false);
+  const [isMuted, setIsMuted] = useState<boolean>(() => {
+    if (typeof (sound as any).isMuted === 'function') {
+      return (sound as any).isMuted();
+    }
+    return false;
+  });
 
-  const handleCopyLink = () => {
-    if (!room) return;
-    const url = `${window.location.origin}${window.location.pathname}?room=${room.code}`;
-    navigator.clipboard.writeText(url);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const handleCopyCode = async () => {
+    try {
+      await navigator.clipboard.writeText(room.code);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard fallback
+    }
   };
 
   const handleShare = async () => {
-    if (!room) return;
-    const url = `${window.location.origin}${window.location.pathname}?room=${room.code}`;
+    const url = window.location.href;
     if (navigator.share) {
       try {
         await navigator.share({
           title: 'Cricket Auction Night',
-          text: `Join our cricket player auction! Room code: ${room.code}`,
+          text: `Join my cricket auction room with code ${room.code}!`,
           url,
         });
-      } catch (err) {
-        // User cancelled or share failed, fallback to copy
-        handleCopyLink();
+      } catch {
+        // Share cancelled
       }
     } else {
-      handleCopyLink();
+      handleCopyCode();
     }
   };
 
-  const getProgressText = () => {
-    if (!room) return 'Cricket Auction Night';
-    if (room.status === 'lobby') return `Lobby · Code: ${room.code}`;
-    if (room.status === 'completed') return 'Auction Concluded';
-
-    const soldCount = room.allPlayers.filter((p) => p.status === 'sold').length;
-    const currentLotNum = (room.currentLot?.playerIndex ?? room.activePlayerIndex) + 1;
-    const totalLots = room.allPlayers.length;
-    const roundPrefix = room.round > 1 ? `Round ${room.round} · ` : '';
-
-    return `${roundPrefix}Lot ${currentLotNum} of ${totalLots} · ${soldCount} sold`;
+  const toggleSound = () => {
+    if (typeof (sound as any).toggleMute === 'function') {
+      const nextMuted = (sound as any).toggleMute();
+      setIsMuted(Boolean(nextMuted));
+    } else if (typeof (sound as any).setEnabled === 'function') {
+      (sound as any).setEnabled(isMuted);
+      setIsMuted(!isMuted);
+    } else {
+      setIsMuted((prev) => !prev);
+    }
   };
 
+  // Safe numerical calculations to prevent "Lot NaN of ..."
+  const pool = room.playerPool || room.allPlayers || [];
+  const poolLength = pool.length;
+  const rawIndex = Number(room.currentPlayerIndex);
+  const safeCurrentIndex = Number.isNaN(rawIndex) ? 0 : rawIndex;
+
+  const displayLotNumber =
+    room.status === 'round_ended' || room.status === 'completed'
+      ? poolLength
+      : Math.min(safeCurrentIndex + 1, poolLength > 0 ? poolLength : 1);
+
+  const totalSold = (room.teams || []).reduce(
+    (sum, t) => sum + (t.players ? t.players.length : 0),
+    0
+  );
+
   return (
-    <header className="sticky top-0 z-30 w-full bg-[var(--color-primary)] text-[var(--color-primary-text)] shadow-md border-b border-black/10">
-      <div className="max-w-[640px] mx-auto px-4 py-2.5 flex items-center justify-between">
-        <div className="flex items-center space-x-2">
-          {/* Cricket Ball Icon */}
-          <div className="w-7 h-7 rounded-full bg-[var(--color-accent)] flex items-center justify-center shadow-inner relative overflow-hidden flex-shrink-0">
-            <div className="w-full h-[2px] bg-white/70 absolute transform rotate-45"></div>
-            <div className="w-1.5 h-1.5 rounded-full bg-white/90"></div>
+    <header className="sticky top-0 z-30 w-full bg-[var(--color-surface)]/90 backdrop-blur-md border-b border-[var(--color-border)] px-3.5 sm:px-6 py-3 transition-colors">
+      <div className="max-w-6xl mx-auto flex items-center justify-between">
+        {/* Logo and Room Progress Tracker */}
+        <div className="flex items-center space-x-3">
+          <div className="w-8 h-8 rounded-full bg-rose-500/15 flex items-center justify-center border border-rose-500/30">
+            <div className="w-4 h-4 rounded-full bg-rose-500 shadow-sm" />
           </div>
+
           <div>
-            <h1 className="text-lg font-extrabold leading-tight tracking-wider font-display m-0">
+            <h1 className="text-sm sm:text-base font-black font-display uppercase tracking-wider text-[var(--color-text-main)] leading-none">
               Auction Night
             </h1>
-            <p className="text-xs text-white/80 font-medium tracking-wide">
-              {getProgressText()}
+            <p className="text-[11px] text-[var(--color-text-muted)] font-mono mt-0.5">
+              {room.status === 'lobby' ? (
+                'Waiting in Lobby'
+              ) : (
+                <>
+                  Lot <span className="font-bold text-[var(--color-text-main)]">{displayLotNumber}</span> of{' '}
+                  <span className="font-bold text-[var(--color-text-main)]">{poolLength}</span>
+                  {' · '}
+                  <span className="text-emerald-500 font-bold">{totalSold}</span> sold
+                </>
+              )}
             </p>
           </div>
         </div>
 
+        {/* Global Action Controls */}
         <div className="flex items-center space-x-2">
-          {room && (
-            <>
-              <button
-                onClick={handleShare}
-                aria-label="Share room link"
-                title="Share link"
-                className="p-2 rounded-lg bg-black/20 hover:bg-black/30 transition text-white text-xs flex items-center space-x-1 font-semibold min-h-[38px]"
-              >
-                {copied ? <Check className="w-4 h-4 text-emerald-300" /> : <Share2 className="w-4 h-4" />}
-                <span className="hidden sm:inline">{copied ? 'Copied' : 'Share'}</span>
-              </button>
+          {/* Share Room Button */}
+          <button
+            type="button"
+            onClick={handleShare}
+            className="hidden sm:inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-[var(--color-surface-subtle)] hover:bg-[var(--color-surface-elevated)] border border-[var(--color-border)] text-xs font-bold font-display uppercase text-[var(--color-text-main)] transition cursor-pointer shadow-xs active:scale-95"
+          >
+            <Share2 className="w-3.5 h-3.5 text-[var(--color-text-muted)]" />
+            <span>Share</span>
+          </button>
 
-              <button
-                onClick={handleCopyLink}
-                aria-label="Copy room code"
-                title="Copy room code"
-                className="px-2.5 py-1.5 rounded-lg bg-white/15 hover:bg-white/25 transition text-white font-mono font-bold text-xs flex items-center space-x-1 min-h-[38px]"
-              >
-                <span>{room.code}</span>
-                {copied ? <Check className="w-3.5 h-3.5 text-emerald-300" /> : <Copy className="w-3.5 h-3.5 text-white/70" />}
-              </button>
-            </>
-          )}
+          {/* Copy Room Code Button */}
+          <button
+            type="button"
+            onClick={handleCopyCode}
+            className="inline-flex items-center space-x-1 px-2.5 py-1.5 rounded-xl bg-[var(--color-surface-subtle)] hover:bg-[var(--color-surface-elevated)] border border-[var(--color-border)] text-xs font-mono font-bold text-[var(--color-text-main)] transition cursor-pointer shadow-xs active:scale-95"
+            title="Click to copy Room Code"
+          >
+            <span>{room.code}</span>
+            {copied ? (
+              <Check className="w-3.5 h-3.5 text-emerald-500" />
+            ) : (
+              <Copy className="w-3.5 h-3.5 text-[var(--color-text-muted)]" />
+            )}
+          </button>
 
-          {room && onOpenSummary && (
+          {/* Summary Modal Toggle */}
+          {onOpenSummary && (
             <button
+              type="button"
               onClick={onOpenSummary}
-              aria-label="Open auction summary and dashboard"
-              title="Auction Summary & Stats"
-              className="px-2.5 py-1.5 rounded-lg bg-black/20 hover:bg-black/30 transition text-white text-xs flex items-center space-x-1 font-semibold min-h-[38px] cursor-pointer"
+              className="inline-flex items-center space-x-1 px-2.5 py-1.5 rounded-xl bg-[var(--color-surface-subtle)] hover:bg-[var(--color-surface-elevated)] border border-[var(--color-border)] text-xs font-bold font-display uppercase text-[var(--color-text-main)] transition cursor-pointer shadow-xs active:scale-95"
             >
-              <BarChart3 className="w-4 h-4 text-amber-300" />
-              <span className="hidden sm:inline">Summary</span>
+              <FileText className="w-3.5 h-3.5 text-[var(--color-primary)]" />
+              <span className="hidden md:inline">Summary</span>
             </button>
           )}
 
-          {onToggleSound && (
-            <button
-              onClick={onToggleSound}
-              aria-label={soundEnabled ? 'Mute sound' : 'Unmute sound'}
-              className="p-2 rounded-lg bg-black/20 hover:bg-black/30 text-white min-h-[38px]"
-            >
-              {soundEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4 text-white/60" />}
-            </button>
-          )}
+          {/* Sound FX Toggle */}
+          <button
+            type="button"
+            onClick={toggleSound}
+            className="p-2 rounded-xl bg-[var(--color-surface-subtle)] hover:bg-[var(--color-surface-elevated)] border border-[var(--color-border)] text-[var(--color-text-muted)] transition cursor-pointer shadow-xs active:scale-95"
+            title={isMuted ? 'Unmute Sounds' : 'Mute Sounds'}
+          >
+            {!isMuted ? (
+              <Volume2 className="w-3.5 h-3.5 text-emerald-500" />
+            ) : (
+              <VolumeX className="w-3.5 h-3.5 text-[var(--color-text-dim)]" />
+            )}
+          </button>
 
+          {/* Host Indicator Badge */}
           {isHost && (
-            <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-amber-400 text-amber-950 shadow-xs">
-              Host
+            <span className="px-2.5 py-1 rounded-xl bg-amber-500 text-stone-950 font-display text-[10px] font-black uppercase tracking-wider shadow-xs">
+              HOST
             </span>
           )}
         </div>
