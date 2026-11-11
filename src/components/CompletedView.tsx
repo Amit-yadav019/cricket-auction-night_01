@@ -21,6 +21,7 @@ import {
   ShieldAlert,
   BarChart3,
   Award,
+  PlayCircle,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import {
@@ -28,6 +29,7 @@ import {
   resetAuctionTransaction,
   submitTeamLineupTransaction,
   saveMasterScoutReport,
+  reAuctionUnsoldTransaction,
 } from '../services/auctionService';
 import { PlayerRole, Team, Player } from '../game/auctionRules';
 import { sound } from '../services/soundService';
@@ -47,6 +49,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
   onOpenSummary,
 }) => {
   const [resetting, setResetting] = useState(false);
+  const [reAuctioning, setReAuctioning] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [submittingLineup, setSubmittingLineup] = useState(false);
   const [lineupSuccessMsg, setLineupSuccessMsg] = useState('');
@@ -64,6 +67,10 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
   const myTeam = teamsList.find((t) => t.ownerToken && t.ownerToken === storedOwnerToken);
 
   const [selectedPlayingIds, setSelectedPlayingIds] = useState<string[]>([]);
+
+  // Compute unsold players count across the entire pool
+  const allPoolPlayers: Player[] = room.playerPool || room.allPlayers || [];
+  const unsoldPlayers = allPoolPlayers.filter((p: Player) => p.status === 'unsold');
 
   // Confetti and fanfare trigger
   useEffect(() => {
@@ -156,9 +163,30 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
     }
   };
 
+  const handleReAuctionUnsold = async () => {
+    if (!isHost) return;
+    if (unsoldPlayers.length === 0) {
+      alert('There are no unsold players left to re-auction.');
+      return;
+    }
+    const nextRound = (room.round || 1) + 1;
+    if (
+      confirm(
+        `Start Round ${nextRound} with ${unsoldPlayers.length} unsold player(s)? Existing squads and remaining team budgets are fully preserved.`
+      )
+    ) {
+      setReAuctioning(true);
+      const res = await reAuctionUnsoldTransaction(room.code, hostToken);
+      setReAuctioning(false);
+      if (!res.success) {
+        alert(res.error || 'Failed to start re-auction.');
+      }
+    }
+  };
+
   const handleResetAuction = async () => {
     if (!isHost) return;
-    if (confirm('Start a new auction? This resets budgets and squad rosters while keeping owner claims intact.')) {
+    if (confirm('Start a brand new auction? This resets budgets and squad rosters back to lobby while keeping team claims intact.')) {
       setResetting(true);
       await resetAuctionTransaction(room.code, hostToken);
       setResetting(false);
@@ -270,6 +298,35 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
           </div>
         )}
       </div>
+
+      {/* UNSOLD PLAYERS NOTICE (ROUND 2 AVAILABILITY) */}
+      {unsoldPlayers.length > 0 && (
+        <div className="relative overflow-hidden bg-gradient-to-r from-amber-500/10 via-[var(--color-surface-subtle)] to-[var(--color-surface-subtle)] border border-amber-500/40 rounded-3xl p-4.5 shadow-sm flex items-center justify-between">
+          <div className="flex items-center space-x-3">
+            <div className="w-10 h-10 rounded-2xl bg-amber-500/20 text-amber-500 flex items-center justify-center flex-shrink-0">
+              <PlayCircle className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-sm font-black font-display uppercase text-[var(--color-text-main)]">
+                {unsoldPlayers.length} Unsold Player{unsoldPlayers.length > 1 ? 's' : ''} Remaining
+              </h3>
+              <p className="text-[11px] text-[var(--color-text-muted)] mt-0.5">
+                The Host can trigger Round {(room.round || 1) + 1} to re-auction unsold players.
+              </p>
+            </div>
+          </div>
+          {isHost && (
+            <button
+              type="button"
+              disabled={reAuctioning}
+              onClick={handleReAuctionUnsold}
+              className="text-[11px] font-black font-display uppercase tracking-wider px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-stone-950 transition cursor-pointer shadow-sm active:scale-95 flex-shrink-0"
+            >
+              {reAuctioning ? 'Starting...' : 'Re-Auction Now'}
+            </button>
+          )}
+        </div>
+      )}
 
       {/* RECORD HAMMER ACQUISITION CARD */}
       {biggestBuy && (
@@ -752,20 +809,41 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
         ))}
       </div>
 
-      {/* HOST RESTART CONTROLS */}
+      {/* HOST RESTART & RE-AUCTION CONTROLS */}
       {isHost && (
-        <div className="sticky bottom-4 bg-[var(--color-surface)]/95 backdrop-blur-md border border-[var(--color-border)] p-4 rounded-2xl shadow-2xl text-center space-y-1.5 z-20">
+        <div className="sticky bottom-4 bg-[var(--color-surface)]/95 backdrop-blur-md border border-[var(--color-border)] p-4 rounded-2xl shadow-2xl text-center space-y-2.5 z-20">
+          {/* RE-AUCTION UNSOLD BUTTON */}
+          {unsoldPlayers.length > 0 && (
+            <button
+              type="button"
+              disabled={reAuctioning}
+              onClick={handleReAuctionUnsold}
+              className="w-full min-h-[48px] py-3 px-6 rounded-xl bg-amber-500 hover:bg-amber-600 text-stone-950 font-display text-sm font-black uppercase tracking-wider shadow-lg transition active:scale-98 flex items-center justify-center space-x-2 cursor-pointer"
+            >
+              <RotateCcw className={`w-4 h-4 ${reAuctioning ? 'animate-spin' : ''}`} />
+              <span>
+                {reAuctioning
+                  ? 'Preparing Round...'
+                  : `Re-Auction Unsold Players (${unsoldPlayers.length} Left)`}
+              </span>
+            </button>
+          )}
+
+          {/* RESET AUCTION BUTTON */}
           <button
             type="button"
             disabled={resetting}
             onClick={handleResetAuction}
-            className="w-full min-h-[48px] py-3 px-6 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-display text-sm font-bold uppercase tracking-wider shadow-lg transition active:scale-98 flex items-center justify-center space-x-2 cursor-pointer"
+            className="w-full min-h-[44px] py-2.5 px-6 rounded-xl bg-stone-700 hover:bg-stone-800 text-white font-display text-xs font-bold uppercase tracking-wider shadow-md transition active:scale-98 flex items-center justify-center space-x-2 cursor-pointer"
           >
-            <RotateCcw className={`w-4 h-4 ${resetting ? 'animate-spin' : ''}`} />
-            <span>{resetting ? 'Resetting Room...' : 'Start A New Auction'}</span>
+            <RotateCcw className={`w-3.5 h-3.5 ${resetting ? 'animate-spin' : ''}`} />
+            <span>{resetting ? 'Resetting Room...' : 'Start A Brand New Auction'}</span>
           </button>
+
           <p className="text-[10px] text-[var(--color-text-dim)]">
-            Clears purses and rosters back to lobby while preserving team phone claims.
+            {unsoldPlayers.length > 0
+              ? `Re-auction starts Round ${(room.round || 1) + 1} with unsold players while preserving all existing squads & remaining purses.`
+              : 'Clears all purses and rosters back to lobby while preserving team claims.'}
           </p>
         </div>
       )}
