@@ -44,6 +44,18 @@ export interface Team {
   players: Player[];
 }
 
+export interface AuctionSettings {
+  pursePerTeam: number;
+  purseUnit: 'Cr' | 'L';
+  minSquadSize: number;
+  maxSquadSize: number;
+  squadSize?: number;
+  bidStep: number;
+  shuffleOrder: boolean;
+  selectedPlayerIds: string[];
+  poolVisibility: 'public' | 'hidden';
+}
+
 export interface BidHistoryItem {
   teamId: string;
   teamShortName: string;

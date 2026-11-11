@@ -25,7 +25,7 @@ import {
   parseCustomPlayers,
   pickRandomBalanced,
 } from '../game/auctionRules';
-import { DEFAULT_100_PLAYERS, DEFAULT_TEAMS_LIST } from '../game/defaultPlayers';
+import { ALL_350_PLAYERS, DEFAULT_TEAMS_LIST } from '../game/defaultPlayers';
 
 interface HostSetupViewProps {
   onBack: () => void;
@@ -65,12 +65,12 @@ export const HostSetupView: React.FC<HostSetupViewProps> = ({
   );
   const [newTeamName, setNewTeamName] = useState('');
 
-  // Players state
+  // Players state - initialized with full 350-player pool
   const [playerPool, setPlayerPool] = useState<Player[]>(() =>
-    DEFAULT_100_PLAYERS.map((p) => ({ ...p }))
+    ALL_350_PLAYERS.map((p) => ({ ...p }))
   );
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() =>
-    new Set(DEFAULT_100_PLAYERS.map((p) => p.id))
+    new Set(ALL_350_PLAYERS.map((p) => p.id))
   );
 
   // Filter & search
@@ -82,8 +82,10 @@ export const HostSetupView: React.FC<HostSetupViewProps> = ({
   const [customInputText, setCustomInputText] = useState('');
   const [customMsg, setCustomMsg] = useState('');
 
-  // Random pick N (defaults to teams * maxSquadSize)
-  const [randomCount, setRandomCount] = useState<number>(() => teams.length * 5);
+  // Random pick N (defaults to 100 or teams * maxSquadSize)
+  const [randomCount, setRandomCount] = useState<number>(() =>
+    Math.max(teams.length * 5, 100)
+  );
 
   // Team management
   const handleAddTeam = () => {
@@ -135,9 +137,10 @@ export const HostSetupView: React.FC<HostSetupViewProps> = ({
   const handlePickRandom = () => {
     const requiredMin = teams.length * minSquadSize;
     const targetCount = Math.max(requiredMin, randomCount);
-    // Guarantees at least minPerPool (e.g. 2) in each role pool (BAT, WK, AR, BOWL)
-    const chosen = pickRandomBalanced(playerPool, targetCount, minPerPool);
-    setSelectedIds(new Set(chosen));
+    // Guarantees proportional distribution with at least minPerPool representation
+    const chosen = pickRandomBalanced(playerPool, targetCount);
+    // pickRandomBalanced returns Player[]; extract their IDs
+    setSelectedIds(new Set(chosen.map((p) => p.id)));
   };
 
   const handleBasePriceChange = (playerId: string, newBase: BasePrice) => {
@@ -247,7 +250,7 @@ export const HostSetupView: React.FC<HostSetupViewProps> = ({
       <div className="flex items-center justify-between">
         <button
           onClick={onBack}
-          className="inline-flex items-center space-x-1.5 text-sm font-semibold text-[var(--color-text-muted)] hover:text-[var(--color-text-main)] min-h-[44px] px-2"
+          className="inline-flex items-center space-x-1.5 text-sm font-semibold text-[var(--color-text-muted)] hover:text-[var(--color-text-main)] min-h-[44px] px-2 cursor-pointer"
         >
           <ArrowLeft className="w-4 h-4" />
           <span>Back</span>
@@ -292,7 +295,7 @@ export const HostSetupView: React.FC<HostSetupViewProps> = ({
               <button
                 type="button"
                 onClick={() => setPurseUnit('Cr')}
-                className={`px-3 py-2 text-xs font-bold ${
+                className={`px-3 py-2 text-xs font-bold cursor-pointer ${
                   purseUnit === 'Cr'
                     ? 'bg-[var(--color-primary)] text-white'
                     : 'bg-[var(--color-surface-subtle)] text-[var(--color-text-muted)]'
@@ -303,7 +306,7 @@ export const HostSetupView: React.FC<HostSetupViewProps> = ({
               <button
                 type="button"
                 onClick={() => setPurseUnit('L')}
-                className={`px-3 py-2 text-xs font-bold ${
+                className={`px-3 py-2 text-xs font-bold cursor-pointer ${
                   purseUnit === 'L'
                     ? 'bg-[var(--color-primary)] text-white'
                     : 'bg-[var(--color-surface-subtle)] text-[var(--color-text-muted)]'
@@ -337,7 +340,7 @@ export const HostSetupView: React.FC<HostSetupViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setMinSquadSize(Math.max(2, minSquadSize - 1))}
-                  className="w-9 h-10 rounded-lg bg-[var(--color-surface)] border border-[var(--color-border)] font-bold text-base hover:bg-[var(--color-surface-elevated)]"
+                  className="w-9 h-10 rounded-lg bg-[var(--color-surface)] border border-[var(--color-border)] font-bold text-base hover:bg-[var(--color-surface-elevated)] cursor-pointer"
                 >
                   -
                 </button>
@@ -351,7 +354,7 @@ export const HostSetupView: React.FC<HostSetupViewProps> = ({
                     setMinSquadSize(next);
                     if (next > maxSquadSize) setMaxSquadSize(next);
                   }}
-                  className="w-9 h-10 rounded-lg bg-[var(--color-surface)] border border-[var(--color-border)] font-bold text-base hover:bg-[var(--color-surface-elevated)]"
+                  className="w-9 h-10 rounded-lg bg-[var(--color-surface)] border border-[var(--color-border)] font-bold text-base hover:bg-[var(--color-surface-elevated)] cursor-pointer"
                 >
                   +
                 </button>
@@ -367,7 +370,7 @@ export const HostSetupView: React.FC<HostSetupViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setMaxSquadSize(Math.max(minSquadSize, maxSquadSize - 1))}
-                  className="w-9 h-10 rounded-lg bg-[var(--color-surface)] border border-[var(--color-border)] font-bold text-base hover:bg-[var(--color-surface-elevated)]"
+                  className="w-9 h-10 rounded-lg bg-[var(--color-surface)] border border-[var(--color-border)] font-bold text-base hover:bg-[var(--color-surface-elevated)] cursor-pointer"
                 >
                   -
                 </button>
@@ -377,7 +380,7 @@ export const HostSetupView: React.FC<HostSetupViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setMaxSquadSize(Math.min(15, maxSquadSize + 1))}
-                  className="w-9 h-10 rounded-lg bg-[var(--color-surface)] border border-[var(--color-border)] font-bold text-base hover:bg-[var(--color-surface-elevated)]"
+                  className="w-9 h-10 rounded-lg bg-[var(--color-surface)] border border-[var(--color-border)] font-bold text-base hover:bg-[var(--color-surface-elevated)] cursor-pointer"
                 >
                   +
                 </button>
@@ -437,7 +440,7 @@ export const HostSetupView: React.FC<HostSetupViewProps> = ({
             <button
               type="button"
               onClick={() => setPoolVisibility('public')}
-              className={`p-2.5 rounded-xl border text-left transition min-h-[44px] ${
+              className={`p-2.5 rounded-xl border text-left transition min-h-[44px] cursor-pointer ${
                 poolVisibility === 'public'
                   ? 'border-[var(--color-primary)] bg-[var(--color-primary-light)] text-[var(--color-primary)] font-bold shadow-xs'
                   : 'border-[var(--color-border)] bg-[var(--color-surface-subtle)] text-[var(--color-text-muted)]'
@@ -452,7 +455,7 @@ export const HostSetupView: React.FC<HostSetupViewProps> = ({
             <button
               type="button"
               onClick={() => setPoolVisibility('hidden')}
-              className={`p-2.5 rounded-xl border text-left transition min-h-[44px] ${
+              className={`p-2.5 rounded-xl border text-left transition min-h-[44px] cursor-pointer ${
                 poolVisibility === 'hidden'
                   ? 'border-amber-500 bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200 font-bold shadow-xs'
                   : 'border-[var(--color-border)] bg-[var(--color-surface-subtle)] text-[var(--color-text-muted)]'
@@ -478,7 +481,7 @@ export const HostSetupView: React.FC<HostSetupViewProps> = ({
             type="button"
             onClick={handleShuffleTeams}
             title="Shuffle team order"
-            className="p-1.5 rounded-lg bg-[var(--color-surface-subtle)] text-[var(--color-text-muted)] hover:text-[var(--color-text-main)] min-h-[36px] flex items-center space-x-1 text-xs"
+            className="p-1.5 rounded-lg bg-[var(--color-surface-subtle)] text-[var(--color-text-muted)] hover:text-[var(--color-text-main)] min-h-[36px] flex items-center space-x-1 text-xs cursor-pointer"
           >
             <Shuffle className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">Shuffle</span>
@@ -504,7 +507,7 @@ export const HostSetupView: React.FC<HostSetupViewProps> = ({
                   type="button"
                   onClick={() => handleRemoveTeam(t.id)}
                   aria-label={`Remove team ${t.name}`}
-                  className="p-1 text-[var(--color-text-dim)] hover:text-red-500 rounded min-h-[36px]"
+                  className="p-1 text-[var(--color-text-dim)] hover:text-red-500 rounded min-h-[36px] cursor-pointer"
                 >
                   <Trash2 className="w-4 h-4" />
                 </button>
@@ -526,7 +529,7 @@ export const HostSetupView: React.FC<HostSetupViewProps> = ({
             <button
               type="button"
               onClick={handleAddTeam}
-              className="px-4 py-2 bg-[var(--color-surface-elevated)] border border-[var(--color-primary)] text-[var(--color-primary)] hover:bg-[var(--color-primary-light)] font-bold text-xs rounded-lg min-h-[44px] flex items-center space-x-1"
+              className="px-4 py-2 bg-[var(--color-surface-elevated)] border border-[var(--color-primary)] text-[var(--color-primary)] hover:bg-[var(--color-primary-light)] font-bold text-xs rounded-lg min-h-[44px] flex items-center space-x-1 cursor-pointer"
             >
               <Plus className="w-4 h-4" />
               <span>Add</span>
@@ -605,7 +608,7 @@ export const HostSetupView: React.FC<HostSetupViewProps> = ({
           </div>
         </div>
 
-        {/* Quick Batch Select Buttons with Pool Guarantee */}
+        {/* Quick Batch Select Buttons with Dynamic Pool Size */}
         <div className="flex flex-wrap items-center gap-2 pt-1">
           <button
             type="button"
@@ -613,7 +616,7 @@ export const HostSetupView: React.FC<HostSetupViewProps> = ({
             className="px-3 py-1.5 bg-[var(--color-surface-subtle)] hover:bg-[var(--color-surface-elevated)] border border-[var(--color-border)] rounded-lg text-xs font-bold text-[var(--color-text-main)] min-h-[38px] flex items-center space-x-1 cursor-pointer"
           >
             <CheckSquare className="w-3.5 h-3.5 text-[var(--color-primary)]" />
-            <span>Select All 100</span>
+            <span>Select All ({playerPool.length})</span>
           </button>
           <button
             type="button"
@@ -636,7 +639,7 @@ export const HostSetupView: React.FC<HostSetupViewProps> = ({
             <button
               type="button"
               onClick={handlePickRandom}
-              title="Picks random N guaranteeing at least 2 players in each role pool (BAT, WK, AR, BOWL)"
+              title="Picks random N proportionally guaranteeing representation in each role pool"
               className="px-2 py-1 text-xs font-bold text-[var(--color-primary)] hover:underline min-h-[36px] cursor-pointer"
             >
               Pick Random (≥2 Each Pool)
