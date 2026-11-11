@@ -587,10 +587,53 @@ export async function resetAuctionTransaction(
       lastResult: null,
       playerPool: all,
       teams: resetTeams,
+      lineups: {},
+      masterScoutReport: null,
     }));
 
     return { success: true };
   } catch (err: any) {
     return { success: false, error: err?.message || 'Failed to reset auction.' };
+  }
+}
+
+// Lineup & AI Tactical Scout Support
+export async function submitTeamLineupTransaction(
+  roomCodeInput: string,
+  teamId: string,
+  playingIds: string[],
+  benchIds: string[]
+): Promise<{ success: boolean; error?: string }> {
+  const roomCode = resolveRoomCode(roomCodeInput);
+  const roomRef = doc(db, 'rooms', roomCode);
+
+  try {
+    await updateDoc(roomRef, {
+      [`lineups.${teamId}`]: {
+        playingIds,
+        benchIds,
+        updatedAt: Date.now(),
+      },
+    });
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Failed to submit lineup.' };
+  }
+}
+
+export async function saveMasterScoutReport(
+  roomCodeInput: string,
+  report: any
+): Promise<{ success: boolean; error?: string }> {
+  const roomCode = resolveRoomCode(roomCodeInput);
+  const roomRef = doc(db, 'rooms', roomCode);
+
+  try {
+    await updateDoc(roomRef, {
+      masterScoutReport: report,
+    });
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Failed to save scout report.' };
   }
 }
