@@ -49,9 +49,6 @@ export interface RoomData {
   };
 }
 
-// ----------------------------------------------------------------------------
-// Token & Code Generators
-// ----------------------------------------------------------------------------
 export function generateRoomCode(): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let result = '';
@@ -69,40 +66,31 @@ export function generateOwnerToken(): string {
   return `owner_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
 }
 
-// ----------------------------------------------------------------------------
-// Team Normalizer: Preserves team ID and all fields
-// ----------------------------------------------------------------------------
+// Strictly removes all undefined keys so Firestore never crashes
+function cleanData<T>(obj: T): T {
+  return JSON.parse(JSON.stringify(obj));
+}
+
 export function normalizeTeamsArray(rawTeams: any): Team[] {
   if (!rawTeams) return [];
 
-  if (Array.isArray(rawTeams)) {
-    return rawTeams
-      .filter(Boolean)
-      .map((t, idx) => ({
-        id: t.id || t.shortName || `team_${idx}`,
-        name: t.name || t.teamName || 'Unknown Team',
-        shortName: t.shortName || t.short_name || (t.name ? t.name.slice(0, 3).toUpperCase() : 'TM'),
-        purse: typeof t.purse === 'number' ? t.purse : 20,
-        spent: typeof t.spent === 'number' ? t.spent : 0,
-        players: Array.isArray(t.players) ? t.players : [],
-        claimedByOwnerName: t.claimedByOwnerName || undefined,
-        ownerToken: t.ownerToken || undefined,
-      }));
-  }
+  const list = Array.isArray(rawTeams) ? rawTeams : Object.values(rawTeams);
 
-  // Object map
-  return Object.entries(rawTeams)
-    .filter(([_, t]) => Boolean(t))
-    .map(([key, t]: [string, any]) => ({
-      id: t.id || key,
-      name: t.name || t.teamName || key,
-      shortName: t.shortName || t.short_name || key.slice(0, 3).toUpperCase(),
-      purse: typeof t.purse === 'number' ? t.purse : 20,
-      spent: typeof t.spent === 'number' ? t.spent : 0,
-      players: Array.isArray(t.players) ? t.players : [],
-      claimedByOwnerName: t.claimedByOwnerName || undefined,
-      ownerToken: t.ownerToken || undefined,
-    }));
+  return list
+    .filter(Boolean)
+    .map((t: any, idx: number) => {
+      const cleanTeam: any = {
+        id: String(t.id || t.shortName || `team_${idx}`),
+        name: String(t.name || t.teamName || 'Team'),
+        shortName: String(t.shortName || (t.name ? t.name.slice(0, 3).toUpperCase() : 'TM')),
+        purse: Number(t.purse ?? 20),
+        spent: Number(t.spent ?? 0),
+        players: Array.isArray(t.players) ? t.players : [],
+      };
+      if (t.claimedByOwnerName) cleanTeam.claimedByOwnerName = String(t.claimedByOwnerName);
+      if (t.ownerToken) cleanTeam.ownerToken = String(t.ownerToken);
+      return cleanTeam as Team;
+    });
 }
 
 function resolveRoomCode(passedCode?: string): string {
@@ -112,9 +100,6 @@ function resolveRoomCode(passedCode?: string): string {
   return fromUrl ? fromUrl.trim() : '';
 }
 
-// ----------------------------------------------------------------------------
-// Room Lifecycle: Create, Subscribe, Heartbeat
-// ----------------------------------------------------------------------------
 export async function createAuctionRoom(
   roomCode: string,
   settings: AuctionSettings,
@@ -124,20 +109,21 @@ export async function createAuctionRoom(
 ): Promise<{ success: boolean; error?: string }> {
   try {
     const roomRef = doc(db, 'rooms', roomCode);
-    const roomData = {
+    const roomData = cleanData({
       code: roomCode,
       roomCode,
       status: 'lobby',
       hostToken,
       hostHeartbeat: Date.now(),
       round: 1,
-      settings,
-      teams: initialTeams,
-      playerPool: players,
-      allPlayers: players,
+      settings: settings || { pursePerTeam: 20, purseUnit: 'Cr', minSquadSize: 15, maxSquadSize: 25, bidStep: 0.5 },
+      teams: normalizeTeamsArray(initialTeams),
+      playerPool: players || [],
+      allPlayers: players || [],
       currentPlayerIndex: 0,
       currentLot: null,
-    };
+    });
+
     await setDoc(roomRef, roomData);
     return { success: true };
   } catch (err: any) {
@@ -180,13 +166,10 @@ export async function sendHostHeartbeat(roomCode: string, hostToken?: string): P
       hostHeartbeat: Date.now(),
     });
   } catch {
-    // Silent ignore
+    // Ignore
   }
 }
 
-// ----------------------------------------------------------------------------
-// Lobby Actions: Claim, Release, Start
-// ----------------------------------------------------------------------------
 export async function claimTeamTransaction(
   roomCode: string,
   teamId: string,
@@ -211,13 +194,12 @@ export async function claimTeamTransaction(
         throw new Error('Team not found');
       }
 
-      normalized[teamIdx] = {
-        ...normalized[teamIdx],
-        claimedByOwnerName: ownerName,
-        ownerToken,
-      };
+      normalized[teamIdx].claimedByOwnerName = ownerName;
+      normalized[teamIdx].ownerToken = ownerToken;
 
-      transaction.update(roomRef, { teams: normalized });
+      transaction.update(roomRef, {
+        teams: cleanData(normalized),
+      });
       return { success: true };
     });
   } catch (err: any) {
@@ -248,10 +230,12 @@ export async function releaseTeamTransaction(
 
       if (teamIdx === -1) throw new Error('Team not found');
 
-      const { claimedByOwnerName, ownerToken: tok, ...rest } = normalized[teamIdx];
-      normalized[teamIdx] = rest as Team;
+      delete (normalized[teamIdx] as any).claimedByOwnerName;
+      delete (normalized[teamIdx] as any).ownerToken;
 
-      transaction.update(roomRef, { teams: normalized });
+      transaction.update(roomRef, {
+        teams: cleanData(normalized),
+      });
       return { success: true };
     });
   } catch (err: any) {
@@ -284,11 +268,11 @@ export async function startBiddingTransaction(
         bidHistory: [],
       };
 
-      transaction.update(roomRef, {
+      transaction.update(roomRef, cleanData({
         status: 'active',
         currentPlayerIndex: 0,
         currentLot: initialLot,
-      });
+      }));
 
       return { success: true };
     });
@@ -299,9 +283,6 @@ export async function startBiddingTransaction(
 
 export const startAuction = startBiddingTransaction;
 
-// ----------------------------------------------------------------------------
-// Auction Ring Transactions
-// ----------------------------------------------------------------------------
 export async function placeBidTransaction(
   roomCodeInput: string,
   teamId: string,
@@ -312,44 +293,31 @@ export async function placeBidTransaction(
   hostToken?: string
 ): Promise<{ success: boolean; error?: string }> {
   const roomCode = resolveRoomCode(roomCodeInput);
-
-  if (!roomCode) {
-    return { success: false, error: 'Room code could not be determined.' };
-  }
+  if (!roomCode) return { success: false, error: 'Room code not found.' };
 
   const roomRef = doc(db, 'rooms', roomCode);
 
   try {
     return await runTransaction(db, async (transaction) => {
       const roomSnap = await transaction.get(roomRef);
-      if (!roomSnap.exists()) {
-        throw new Error(`Room "${roomCode}" not found.`);
-      }
+      if (!roomSnap.exists()) throw new Error(`Room not found.`);
 
       const room = roomSnap.data() as any;
-
-      if (room.status !== 'active') {
-        throw new Error('Auction is not currently accepting bids.');
-      }
+      if (room.status !== 'active') throw new Error('Auction is not active.');
 
       const lot = room.currentLot;
-      if (!lot || !lot.player) {
-        throw new Error('No active player on the podium.');
-      }
+      if (!lot || !lot.player) throw new Error('No active player.');
 
       const teams = normalizeTeamsArray(room.teams);
       const biddingTeam = teams.find(
         (t) => t.id === teamId || t.name === teamId || t.shortName === teamId
       );
 
-      if (!biddingTeam) {
-        throw new Error('Team could not be found.');
-      }
+      if (!biddingTeam) throw new Error('Team not found.');
 
       const maxSquad = room.settings?.maxSquadSize || room.settings?.squadSize || 25;
-      const currentSquadCount = biddingTeam.players?.length || 0;
-      if (currentSquadCount >= maxSquad) {
-        throw new Error(`${biddingTeam.name} squad is already full.`);
+      if ((biddingTeam.players?.length || 0) >= maxSquad) {
+        throw new Error(`${biddingTeam.name} squad is full.`);
       }
 
       const minRequired =
@@ -362,7 +330,7 @@ export async function placeBidTransaction(
       }
 
       if (bidAmount > biddingTeam.purse) {
-        throw new Error(`Insufficient purse (₹${biddingTeam.purse} Cr available).`);
+        throw new Error(`Insufficient purse.`);
       }
 
       const bidRecord = {
@@ -372,23 +340,19 @@ export async function placeBidTransaction(
         timestamp: Date.now(),
       };
 
-      const existingHistory = Array.isArray(lot.bidHistory) ? lot.bidHistory : [];
-      const updatedBidHistory = [bidRecord, ...existingHistory].slice(0, 20);
+      const updatedBidHistory = [bidRecord, ...(lot.bidHistory || [])].slice(0, 20);
 
-      transaction.update(roomRef, {
+      transaction.update(roomRef, cleanData({
         'currentLot.currentBid': Number(bidAmount.toFixed(2)),
         'currentLot.leadingTeamId': biddingTeam.id,
         'currentLot.leadingTeamName': biddingTeam.name,
         'currentLot.bidHistory': updatedBidHistory,
-      });
+      }));
 
       return { success: true };
     });
   } catch (error: any) {
-    return {
-      success: false,
-      error: error?.message || 'Bid could not be placed.',
-    };
+    return { success: false, error: error?.message || 'Bid failed.' };
   }
 }
 
@@ -406,9 +370,8 @@ export async function markSoldTransaction(
 
       const room = snap.data() as any;
       const lot = room.currentLot;
-
       if (!lot || lot.currentBid === null || !lot.leadingTeamId) {
-        throw new Error('Cannot mark sold without an active leading bid.');
+        throw new Error('No leading bid.');
       }
 
       const winningTeamId = lot.leadingTeamId;
@@ -437,18 +400,10 @@ export async function markSoldTransaction(
       const pool = room.playerPool || room.allPlayers || [];
       const hasNext = nextIndex < pool.length;
 
-      const nextLot = hasNext
-        ? {
-            player: pool[nextIndex],
-            currentBid: null,
-            bidHistory: [],
-          }
-        : null;
-
-      transaction.update(roomRef, {
+      transaction.update(roomRef, cleanData({
         teams: updatedTeams,
         currentPlayerIndex: nextIndex,
-        currentLot: nextLot,
+        currentLot: hasNext ? { player: pool[nextIndex], currentBid: null, bidHistory: [] } : null,
         status: hasNext ? 'active' : 'round_ended',
         lastResult: {
           type: 'SOLD',
@@ -457,7 +412,7 @@ export async function markSoldTransaction(
           amount: winningAmount,
           timestamp: Date.now(),
         },
-      });
+      }));
 
       return { success: true };
     });
@@ -480,28 +435,16 @@ export async function markUnsoldTransaction(
 
       const room = snap.data() as any;
       const lot = room.currentLot;
-      if (!lot) throw new Error('No lot currently active');
+      if (!lot) throw new Error('No active lot');
 
-      const unsoldPlayer: Player = {
-        ...lot.player,
-        status: 'unsold',
-      };
-
+      const unsoldPlayer: Player = { ...lot.player, status: 'unsold' };
       const nextIndex = (room.currentPlayerIndex || 0) + 1;
       const pool = room.playerPool || room.allPlayers || [];
       const hasNext = nextIndex < pool.length;
 
-      const nextLot = hasNext
-        ? {
-            player: pool[nextIndex],
-            currentBid: null,
-            bidHistory: [],
-          }
-        : null;
-
-      transaction.update(roomRef, {
+      transaction.update(roomRef, cleanData({
         currentPlayerIndex: nextIndex,
-        currentLot: nextLot,
+        currentLot: hasNext ? { player: pool[nextIndex], currentBid: null, bidHistory: [] } : null,
         status: hasNext ? 'active' : 'round_ended',
         lastResult: {
           type: 'UNSOLD',
@@ -510,7 +453,7 @@ export async function markUnsoldTransaction(
           amount: 0,
           timestamp: Date.now(),
         },
-      });
+      }));
 
       return { success: true };
     });
@@ -540,12 +483,12 @@ export async function undoLastBidTransaction(
       const newHistory = lot.bidHistory.slice(1);
       const previousBid = newHistory.length > 0 ? newHistory[0] : null;
 
-      transaction.update(roomRef, {
+      transaction.update(roomRef, cleanData({
         'currentLot.currentBid': previousBid ? previousBid.amount : null,
         'currentLot.leadingTeamId': previousBid ? previousBid.teamId : null,
         'currentLot.leadingTeamName': previousBid ? previousBid.teamName : null,
         'currentLot.bidHistory': newHistory,
-      });
+      }));
 
       return { success: true };
     });
@@ -575,7 +518,7 @@ export async function reAuctionUnsoldTransaction(
 
     const resetUnsold = unsold.map((p: Player) => ({ ...p, status: 'pending' as const }));
 
-    await updateDoc(roomRef, {
+    await updateDoc(roomRef, cleanData({
       playerPool: resetUnsold,
       currentPlayerIndex: 0,
       round: (room.round || 1) + 1,
@@ -585,7 +528,7 @@ export async function reAuctionUnsoldTransaction(
         currentBid: null,
         bidHistory: [],
       },
-    });
+    }));
 
     return { success: true };
   } catch (err: any) {
@@ -600,10 +543,10 @@ export async function endAuctionTransaction(
   const roomCode = resolveRoomCode(roomCodeInput);
   const roomRef = doc(db, 'rooms', roomCode);
   try {
-    await updateDoc(roomRef, {
+    await updateDoc(roomRef, cleanData({
       status: 'completed',
       currentLot: null,
-    });
+    }));
     return { success: true };
   } catch (err: any) {
     return { success: false, error: err?.message || 'Failed to end auction.' };
@@ -636,7 +579,7 @@ export async function resetAuctionTransaction(
       players: [],
     }));
 
-    await updateDoc(roomRef, {
+    await updateDoc(roomRef, cleanData({
       status: 'lobby',
       round: 1,
       currentPlayerIndex: 0,
@@ -644,7 +587,7 @@ export async function resetAuctionTransaction(
       lastResult: null,
       playerPool: all,
       teams: resetTeams,
-    });
+    }));
 
     return { success: true };
   } catch (err: any) {
