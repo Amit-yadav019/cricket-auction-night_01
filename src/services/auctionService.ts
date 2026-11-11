@@ -24,7 +24,7 @@ export interface RoomData {
   hostHeartbeat?: number;
   round: number;
   settings: AuctionSettings;
-  teams: Team[] | Record<string, Team>;
+  teams: Team[];
   playerPool?: Player[];
   allPlayers?: Player[];
   currentPlayerIndex: number;
@@ -70,8 +70,14 @@ export function generateOwnerToken(): string {
 }
 
 // ----------------------------------------------------------------------------
-// Safe Team Helpers
+// Team Normalizer
 // ----------------------------------------------------------------------------
+export function normalizeTeamsArray(rawTeams: any): Team[] {
+  if (!rawTeams) return [];
+  if (Array.isArray(rawTeams)) return rawTeams.filter(Boolean);
+  return Object.values(rawTeams).filter(Boolean) as Team[];
+}
+
 function findTeamSafely(rawTeams: any, teamId: string): { team: Team | undefined; index: number | string } {
   if (!rawTeams || !teamId) return { team: undefined, index: -1 };
 
@@ -112,7 +118,7 @@ export async function createAuctionRoom(
 ): Promise<{ success: boolean; error?: string }> {
   try {
     const roomRef = doc(db, 'rooms', roomCode);
-    const roomData: RoomData = {
+    const roomData = {
       code: roomCode,
       roomCode,
       status: 'lobby',
@@ -139,7 +145,12 @@ export function subscribeToRoom(roomCode: string, onUpdate: (data: RoomData | nu
     roomRef,
     (snap) => {
       if (snap.exists()) {
-        onUpdate(snap.data() as RoomData);
+        const raw = snap.data();
+        const data: RoomData = {
+          ...(raw as any),
+          teams: normalizeTeamsArray(raw?.teams),
+        };
+        onUpdate(data);
       } else {
         onUpdate(null);
       }
@@ -160,7 +171,7 @@ export async function sendHostHeartbeat(roomCode: string, hostToken?: string): P
       hostHeartbeat: Date.now(),
     });
   } catch {
-    // Silent ignore for heartbeats
+    // Silent ignore
   }
 }
 
@@ -180,13 +191,13 @@ export async function claimTeamTransaction(
       const snap = await transaction.get(roomRef);
       if (!snap.exists()) throw new Error('Room not found');
 
-      const room = snap.data() as RoomData;
+      const room = snap.data() as any;
       const { team, index } = findTeamSafely(room.teams, teamId);
       if (!team) throw new Error('Team not found');
 
       let updatedTeams: any;
       if (Array.isArray(room.teams)) {
-        updatedTeams = room.teams.map((t) => {
+        updatedTeams = room.teams.map((t: Team) => {
           if (t.id === teamId) {
             return {
               ...t,
@@ -215,7 +226,6 @@ export async function claimTeamTransaction(
   }
 }
 
-// Alias for LobbyView and SquadsView
 export const claimTeam = claimTeamTransaction;
 
 export async function releaseTeamTransaction(
@@ -230,10 +240,10 @@ export async function releaseTeamTransaction(
       const snap = await transaction.get(roomRef);
       if (!snap.exists()) throw new Error('Room not found');
 
-      const room = snap.data() as RoomData;
+      const room = snap.data() as any;
       let updatedTeams: any;
       if (Array.isArray(room.teams)) {
-        updatedTeams = room.teams.map((t) => {
+        updatedTeams = room.teams.map((t: Team) => {
           if (t.id === teamId && (t.ownerToken === ownerToken || !ownerToken)) {
             const { claimedByOwnerName, ownerToken: tok, ...rest } = t;
             return rest as Team;
@@ -257,7 +267,6 @@ export async function releaseTeamTransaction(
   }
 }
 
-// Alias for LobbyView
 export const releaseTeam = releaseTeamTransaction;
 
 export async function startBiddingTransaction(
@@ -271,7 +280,7 @@ export async function startBiddingTransaction(
       const snap = await transaction.get(roomRef);
       if (!snap.exists()) throw new Error('Room not found');
 
-      const room = snap.data() as RoomData;
+      const room = snap.data() as any;
       const pool = room.playerPool || room.allPlayers || [];
       if (pool.length === 0) throw new Error('No players found in room pool.');
 
@@ -295,7 +304,6 @@ export async function startBiddingTransaction(
   }
 }
 
-// Alias for LobbyView
 export const startAuction = startBiddingTransaction;
 
 // ----------------------------------------------------------------------------
@@ -328,7 +336,7 @@ export async function placeBidTransaction(
         throw new Error(`Room "${roomCode}" not found in database.`);
       }
 
-      const room = roomSnap.data() as RoomData;
+      const room = roomSnap.data() as any;
 
       if (room.status !== 'active') {
         throw new Error('Auction is not currently accepting bids.');
@@ -404,7 +412,7 @@ export async function markSoldTransaction(
       const snap = await transaction.get(roomRef);
       if (!snap.exists()) throw new Error('Room not found');
 
-      const room = snap.data() as RoomData;
+      const room = snap.data() as any;
       const lot = room.currentLot;
 
       if (!lot || lot.currentBid === null || !lot.leadingTeamId) {
@@ -422,7 +430,7 @@ export async function markSoldTransaction(
 
       let updatedTeams: any;
       if (Array.isArray(room.teams)) {
-        updatedTeams = room.teams.map((t) => {
+        updatedTeams = room.teams.map((t: Team) => {
           if (t && t.id === winningTeamId) {
             return {
               ...t,
@@ -491,7 +499,7 @@ export async function markUnsoldTransaction(
       const snap = await transaction.get(roomRef);
       if (!snap.exists()) throw new Error('Room not found');
 
-      const room = snap.data() as RoomData;
+      const room = snap.data() as any;
       const lot = room.currentLot;
       if (!lot) throw new Error('No lot currently active');
 
@@ -544,7 +552,7 @@ export async function undoLastBidTransaction(
       const snap = await transaction.get(roomRef);
       if (!snap.exists()) throw new Error('Room not found');
 
-      const room = snap.data() as RoomData;
+      const room = snap.data() as any;
       const lot = room.currentLot;
       if (!lot || !lot.bidHistory || lot.bidHistory.length === 0) {
         throw new Error('No bids placed to undo on this lot.');
@@ -578,15 +586,15 @@ export async function reAuctionUnsoldTransaction(
     const snap = await getDoc(roomRef);
     if (!snap.exists()) return { success: false, error: 'Room not found' };
 
-    const room = snap.data() as RoomData;
+    const room = snap.data() as any;
     const pool = room.playerPool || room.allPlayers || [];
-    const unsold = pool.filter((p) => p.status === 'unsold');
+    const unsold = pool.filter((p: Player) => p.status === 'unsold');
 
     if (unsold.length === 0) {
       return { success: false, error: 'No unsold players left to re-auction.' };
     }
 
-    const resetUnsold = unsold.map((p) => ({ ...p, status: 'pending' as const }));
+    const resetUnsold = unsold.map((p: Player) => ({ ...p, status: 'pending' as const }));
 
     await updateDoc(roomRef, {
       playerPool: resetUnsold,
@@ -633,28 +641,21 @@ export async function resetAuctionTransaction(
     const snap = await getDoc(roomRef);
     if (!snap.exists()) throw new Error('Room not found');
 
-    const room = snap.data() as RoomData;
-    const all = (room.allPlayers || []).map((p) => ({ ...p, status: 'pending' as const, soldPrice: undefined, soldToTeamId: undefined }));
+    const room = snap.data() as any;
+    const all = (room.allPlayers || []).map((p: Player) => ({
+      ...p,
+      status: 'pending' as const,
+      soldPrice: undefined,
+      soldToTeamId: undefined,
+    }));
 
-    let resetTeams: any;
-    if (Array.isArray(room.teams)) {
-      resetTeams = room.teams.map((t) => ({
-        ...t,
-        purse: room.settings?.pursePerTeam || 20,
-        spent: 0,
-        players: [],
-      }));
-    } else {
-      resetTeams = {};
-      Object.entries(room.teams || {}).forEach(([k, t]) => {
-        resetTeams[k] = {
-          ...t,
-          purse: room.settings?.pursePerTeam || 20,
-          spent: 0,
-          players: [],
-        };
-      });
-    }
+    const rawTeams = normalizeTeamsArray(room.teams);
+    const resetTeams = rawTeams.map((t) => ({
+      ...t,
+      purse: room.settings?.pursePerTeam || 20,
+      spent: 0,
+      players: [],
+    }));
 
     await updateDoc(roomRef, {
       status: 'lobby',

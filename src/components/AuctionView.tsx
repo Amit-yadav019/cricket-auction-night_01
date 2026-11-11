@@ -62,7 +62,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
   // Selected raise multiplier for owner (1, 2, or 4 steps)
   const [selectedMultiplier, setSelectedMultiplier] = useState<number>(1);
 
-  // Host selected paddle team (for host bidding on behalf of teams)
+  // Normalize teams array safely whether array or object map
   const teamsList: Team[] = Array.isArray(room?.teams)
     ? (room.teams as Team[])
     : Object.values(room?.teams || {});
@@ -160,25 +160,16 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
   const minSquad = room?.settings?.minSquadSize || maxSquad;
   const slotsLeft = maxSquad - teamPlayerCount;
 
-  // Adapter for calculateMaxBid (expects a Team object and maxSquadSize)
+  // Max bid calculation using proper team object
   const maxAllowedBid = activeBiddingTeam
     ? calculateMaxBid(
         {
-          id: activeBiddingTeam.id,
-          name: activeBiddingTeam.name,
-          shortName: activeBiddingTeam.shortName,
-          purse: activeBiddingTeam.purse,
-          spent: activeBiddingTeam.spent || 0,
+          ...activeBiddingTeam,
           players: activeBiddingTeam.players || [],
-        } as Team,
+        },
         maxSquad
       )
     : 0;
-
-  // Valid next bids
-  const validNextBids: number[] = lot?.player
-    ? getValidNextBids(currentBid || 0, lot.player.basePrice, 3)
-    : [];
 
   // Calculate proposed bid amount
   let proposedBidAmount = 0;
@@ -189,7 +180,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
     proposedBidAmount = Number(((currentBid || 0) + selectedMultiplier * step).toFixed(2));
   }
 
-  // Determine reason why active bidding team cannot bid
+  // Reason why active bidding team cannot bid
   let bidDisabledReason = '';
   if (!lot) {
     bidDisabledReason = 'No active lot';
@@ -491,6 +482,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
             </div>
           )}
 
+          {/* Top Info Bar: Role Badge & Base Price */}
           <div className="flex items-center justify-between mb-2">
             <span
               className={`text-xs font-bold px-2 py-0.5 rounded-full border ${getRoleBadgeColor(
@@ -504,10 +496,36 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
             </span>
           </div>
 
+          {/* Player Name */}
           <div className="text-center my-1">
             <h2 className="text-2xl sm:text-3xl font-black font-display tracking-wide uppercase text-[var(--color-text-main)]">
               {lot.player.name}
             </h2>
+          </div>
+
+          {/* Player Style Attributes: Batting and Bowling badges */}
+          <div className="flex flex-wrap items-center justify-center gap-1.5 mt-2 mb-3">
+            {lot.player.cappedStatus && (
+              <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[var(--color-surface-subtle)] border border-[var(--color-border)] text-[var(--color-text-dim)]">
+                {lot.player.cappedStatus}
+              </span>
+            )}
+
+            {/* Batting Style (for BAT, WK, AR) */}
+            {(lot.player.role === 'BAT' || lot.player.role === 'WK' || lot.player.role === 'AR') &&
+              lot.player.battingStyle && (
+                <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-300">
+                  🏏 {lot.player.battingStyle}
+                </span>
+              )}
+
+            {/* Bowling Style (for BOWL, AR) */}
+            {(lot.player.role === 'BOWL' || lot.player.role === 'AR') &&
+              lot.player.bowlingStyle && (
+                <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-purple-50 dark:bg-purple-950/60 border border-purple-200 dark:border-purple-800 text-purple-700 dark:text-purple-300">
+                  ⚾ {lot.player.bowlingStyle}
+                </span>
+              )}
           </div>
 
           {/* Current Bid Display */}
@@ -720,13 +738,9 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
                 const tSlots = tMaxSquad - tPlayerCount;
                 const tMaxBid = calculateMaxBid(
                   {
-                    id: t.id,
-                    name: t.name,
-                    shortName: t.shortName,
-                    purse: t.purse,
-                    spent: t.spent || 0,
+                    ...t,
                     players: t.players || [],
-                  } as Team,
+                  },
                   tMaxSquad
                 );
 

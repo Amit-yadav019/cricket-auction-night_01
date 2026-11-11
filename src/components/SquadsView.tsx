@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import { Users, ChevronDown, ChevronUp, UserCheck, Shield, Plus } from 'lucide-react';
+import { ChevronDown, ChevronUp } from 'lucide-react';
 import { RoomData, claimTeam } from '../services/auctionService';
-import { PlayerRole } from '../game/auctionRules';
+import { PlayerRole, Team } from '../game/auctionRules';
 
 interface SquadsViewProps {
   room: RoomData;
@@ -16,8 +16,13 @@ export const SquadsView: React.FC<SquadsViewProps> = ({
   ownerName,
   onUpdateOwnerName,
 }) => {
+  // Normalize teams safely whether array or object map
+  const teamsList: Team[] = Array.isArray(room?.teams)
+    ? (room.teams as Team[])
+    : Object.values(room?.teams || {});
+
   const [expandedTeamId, setExpandedTeamId] = useState<string | null>(
-    room.teams[0]?.id || null
+    teamsList[0]?.id || null
   );
   const [claimNameInput, setClaimNameInput] = useState(ownerName || '');
   const [claimingTeamId, setClaimingTeamId] = useState<string | null>(null);
@@ -32,6 +37,8 @@ export const SquadsView: React.FC<SquadsViewProps> = ({
         return 'bg-emerald-100 text-emerald-900 dark:bg-emerald-950 dark:text-emerald-200 border-emerald-400';
       case 'BOWL':
         return 'bg-purple-100 text-purple-900 dark:bg-purple-950 dark:text-purple-200 border-purple-400';
+      default:
+        return 'bg-gray-100 text-gray-900 border-gray-400';
     }
   };
 
@@ -43,9 +50,9 @@ export const SquadsView: React.FC<SquadsViewProps> = ({
     setClaimingTeamId(null);
   };
 
-  const maxSquad = room.settings.maxSquadSize || room.settings.squadSize;
-  const minSquad = room.settings.minSquadSize || maxSquad;
-  const myClaimedTeam = room.teams.find((t) => t.ownerToken === ownerToken);
+  const maxSquad = room?.settings?.maxSquadSize || room?.settings?.squadSize || 25;
+  const minSquad = room?.settings?.minSquadSize || maxSquad;
+  const myClaimedTeam = teamsList.find((t) => t && t.ownerToken === ownerToken);
 
   return (
     <div className="w-full max-w-[540px] mx-auto px-4 py-3 space-y-3">
@@ -55,19 +62,19 @@ export const SquadsView: React.FC<SquadsViewProps> = ({
             Team Squads
           </h2>
           <p className="text-xs text-[var(--color-text-muted)]">
-            Purse cap: ₹{room.settings.pursePerTeam} {room.settings.purseUnit} · Target: {minSquad === maxSquad ? `${maxSquad} Players` : `${minSquad} to ${maxSquad} Players`}
+            Purse cap: ₹{room?.settings?.pursePerTeam || 20} {room?.settings?.purseUnit || 'Cr'} · Target: {minSquad === maxSquad ? `${maxSquad} Players` : `${minSquad} to ${maxSquad} Players`}
           </p>
         </div>
       </div>
 
       <div className="space-y-2.5">
-        {room.teams.map((team) => {
-          const maxSquad = room.settings.maxSquadSize || room.settings.squadSize;
-          const minSquad = room.settings.minSquadSize || maxSquad;
+        {teamsList.map((team) => {
+          if (!team) return null;
           const isExpanded = expandedTeamId === team.id;
           const isMine = team.ownerToken === ownerToken;
           const isClaimed = !!team.claimedByOwnerName;
-          const slotsLeft = maxSquad - team.players.length;
+          const teamPlayers = team.players || [];
+          const slotsLeft = Math.max(0, maxSquad - teamPlayers.length);
 
           return (
             <div
@@ -105,7 +112,7 @@ export const SquadsView: React.FC<SquadsViewProps> = ({
 
                 <div className="flex items-center space-x-2 flex-shrink-0">
                   <span className="text-xs font-mono font-bold px-2 py-0.5 rounded-full bg-[var(--color-surface-subtle)] text-[var(--color-text-main)] border border-[var(--color-border)]">
-                    {team.players.length}/{minSquad === maxSquad ? maxSquad : `${minSquad}-${maxSquad}`}
+                    {teamPlayers.length}/{minSquad === maxSquad ? maxSquad : `${minSquad}-${maxSquad}`}
                   </span>
                   {isExpanded ? (
                     <ChevronUp className="w-4 h-4 text-[var(--color-text-dim)]" />
@@ -122,7 +129,7 @@ export const SquadsView: React.FC<SquadsViewProps> = ({
                   <div className="grid grid-cols-3 gap-2 text-center text-xs py-2 bg-[var(--color-surface)] rounded-xl border border-[var(--color-border)]">
                     <div>
                       <span className="text-[10px] text-[var(--color-text-dim)] uppercase block">Spent</span>
-                      <span className="font-mono font-bold text-[var(--color-accent)]">₹{team.spent}</span>
+                      <span className="font-mono font-bold text-[var(--color-accent)]">₹{team.spent || 0}</span>
                     </div>
                     <div>
                       <span className="text-[10px] text-[var(--color-text-dim)] uppercase block">Purse Left</span>
@@ -135,7 +142,7 @@ export const SquadsView: React.FC<SquadsViewProps> = ({
                   </div>
 
                   {/* Claim Button if Open & User has no team */}
-                  {!isClaimed && !myClaimedTeam && room.status === 'lobby' && (
+                  {!isClaimed && !myClaimedTeam && room?.status === 'lobby' && (
                     <div className="p-2 bg-[var(--color-primary-light)]/40 rounded-xl flex items-center justify-between">
                       <input
                         type="text"
@@ -145,9 +152,10 @@ export const SquadsView: React.FC<SquadsViewProps> = ({
                         className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg px-2.5 py-1 text-xs font-semibold mr-2 flex-1 min-h-[36px]"
                       />
                       <button
+                        type="button"
                         onClick={() => handleClaim(team.id)}
                         disabled={claimingTeamId === team.id}
-                        className="px-3 py-1 bg-[var(--color-primary)] text-white font-bold text-xs rounded-lg min-h-[36px] flex-shrink-0"
+                        className="px-3 py-1 bg-[var(--color-primary)] text-white font-bold text-xs rounded-lg min-h-[36px] flex-shrink-0 cursor-pointer"
                       >
                         Claim Team
                       </button>
@@ -155,13 +163,13 @@ export const SquadsView: React.FC<SquadsViewProps> = ({
                   )}
 
                   {/* Players list */}
-                  {team.players.length === 0 ? (
+                  {teamPlayers.length === 0 ? (
                     <p className="text-xs text-[var(--color-text-dim)] italic text-center py-3">
                       No players purchased yet.
                     </p>
                   ) : (
                     <div className="space-y-1.5">
-                      {team.players.map((p, idx) => (
+                      {teamPlayers.map((p, idx) => (
                         <div
                           key={p.id + idx}
                           className="flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-[var(--color-surface)] border border-[var(--color-border)]"
@@ -182,7 +190,7 @@ export const SquadsView: React.FC<SquadsViewProps> = ({
                             </span>
                           </div>
                           <span className="text-xs font-mono font-bold text-[var(--color-accent)] flex-shrink-0">
-                            ₹{p.soldPrice ?? p.basePrice} {room.settings.purseUnit}
+                            ₹{p.soldPrice ?? p.basePrice} {room?.settings?.purseUnit || 'Cr'}
                           </span>
                         </div>
                       ))}

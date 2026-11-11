@@ -4,13 +4,11 @@ import {
   Check,
   Share2,
   Users,
-  Shield,
   Play,
-  RotateCcw,
-  Smartphone,
   UserCheck,
 } from 'lucide-react';
 import { RoomData, claimTeam, releaseTeam, startAuction } from '../services/auctionService';
+import { Team } from '../game/auctionRules';
 
 interface LobbyViewProps {
   room: RoomData;
@@ -31,12 +29,18 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
 }) => {
   const [copied, setCopied] = useState(false);
   const [claimNameInput, setClaimNameInput] = useState(ownerName || '');
-  const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
   const [claiming, setClaiming] = useState(false);
   const [actionError, setActionError] = useState('');
   const [starting, setStarting] = useState(false);
 
-  const shareableUrl = `${window.location.origin}${window.location.pathname}?room=${room.code}`;
+  // Normalize teams whether Firestore returned an Array or an Object Map
+  const teamsList: Team[] = Array.isArray(room?.teams)
+    ? (room.teams as Team[])
+    : Object.values(room?.teams || {});
+
+  const allPlayersList = room?.allPlayers || room?.playerPool || [];
+
+  const shareableUrl = `${window.location.origin}${window.location.pathname}?room=${room?.code || ''}`;
 
   const handleCopyLink = () => {
     navigator.clipboard.writeText(shareableUrl);
@@ -49,10 +53,10 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
       try {
         await navigator.share({
           title: 'Cricket Auction Night',
-          text: `Join the auction! Room code: ${room.code}`,
+          text: `Join the auction! Room code: ${room?.code || ''}`,
           url: shareableUrl,
         });
-      } catch (err) {
+      } catch {
         handleCopyLink();
       }
     } else {
@@ -60,7 +64,7 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
     }
   };
 
-  const myClaimedTeam = room.teams.find((t) => t.ownerToken === ownerToken);
+  const myClaimedTeam = teamsList.find((t) => t && t.ownerToken === ownerToken);
 
   const handleClaimSubmit = async (teamId: string) => {
     const trimmedName = claimNameInput.trim();
@@ -76,8 +80,6 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
     setClaiming(false);
     if (!res.success) {
       setActionError(res.error || 'Failed to claim team');
-    } else {
-      setSelectedTeamId(null);
     }
   };
 
@@ -100,7 +102,7 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
     }
   };
 
-  const claimedCount = room.teams.filter((t) => !!t.claimedByOwnerName).length;
+  const claimedCount = teamsList.filter((t) => t && !!t.claimedByOwnerName).length;
 
   return (
     <div className="w-full max-w-[540px] mx-auto px-4 py-5 space-y-5">
@@ -111,7 +113,7 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
         </span>
         <div className="my-2">
           <span className="text-4xl sm:text-5xl font-black font-mono tracking-widest text-[var(--color-primary)] scoreboard-num select-all">
-            {room.code}
+            {room?.code}
           </span>
         </div>
 
@@ -121,6 +123,7 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
 
         <div className="flex items-center justify-center space-x-2">
           <button
+            type="button"
             onClick={handleCopyLink}
             className="flex-1 max-w-[200px] min-h-[44px] px-4 py-2 bg-[var(--color-surface-subtle)] hover:bg-[var(--color-surface-elevated)] border border-[var(--color-border)] rounded-xl text-xs font-bold text-[var(--color-text-main)] flex items-center justify-center space-x-2 transition cursor-pointer"
           >
@@ -128,6 +131,7 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
             <span>{copied ? 'Link Copied!' : 'Copy Share Link'}</span>
           </button>
           <button
+            type="button"
             onClick={handleShare}
             className="min-h-[44px] px-4 py-2 bg-[var(--color-primary-light)] text-[var(--color-primary)] hover:bg-[var(--color-primary)] hover:text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 transition cursor-pointer"
           >
@@ -189,15 +193,16 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
         <div className="flex items-center justify-between">
           <h2 className="text-base font-bold font-display uppercase tracking-wider text-[var(--color-text-main)] flex items-center space-x-2">
             <Users className="w-5 h-5 text-[var(--color-primary)]" />
-            <span>Teams ({claimedCount} / {room.teams.length} Claimed)</span>
+            <span>Teams ({claimedCount} / {teamsList.length} Claimed)</span>
           </h2>
           <span className="text-xs text-[var(--color-text-dim)] font-medium">
-            Purse: ₹{room.settings.pursePerTeam} {room.settings.purseUnit}
+            Purse: ₹{room?.settings?.pursePerTeam || 20} {room?.settings?.purseUnit || 'Cr'}
           </span>
         </div>
 
         <div className="space-y-2">
-          {room.teams.map((team) => {
+          {teamsList.map((team) => {
+            if (!team) return null;
             const isMine = team.ownerToken === ownerToken;
             const isClaimed = !!team.claimedByOwnerName;
 
@@ -282,7 +287,7 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
             <span>{starting ? 'Starting Auction...' : 'Start Bidding'}</span>
           </button>
           <div className="text-center text-[11px] text-[var(--color-text-dim)] font-medium">
-            {room.allPlayers.length} players loaded · Squad: {room.settings.minSquadSize || room.settings.squadSize}-{room.settings.maxSquadSize || room.settings.squadSize} players · {room.settings.poolVisibility === 'hidden' ? 'Secret Pool (Blind Lots)' : 'Open Pool'}
+            {allPlayersList.length} players loaded · Squad: {room?.settings?.minSquadSize || room?.settings?.squadSize || 15}-{room?.settings?.maxSquadSize || room?.settings?.squadSize || 25} players · {room?.settings?.poolVisibility === 'hidden' ? 'Secret Pool (Blind Lots)' : 'Open Pool'}
           </div>
         </div>
       ) : (

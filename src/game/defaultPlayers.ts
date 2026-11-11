@@ -368,7 +368,7 @@ export const ALL_350_PLAYERS: Player[] = [
   { id: 'bowl_92', name: 'Prashant Solanki', role: 'BOWL', basePrice: 0.5, status: 'pending', cappedStatus: 'Uncapped', bowlingStyle: 'Right-arm legbreak' },
   { id: 'bowl_93', name: 'Kulwant Khejroliya', role: 'BOWL', basePrice: 0.5, status: 'pending', cappedStatus: 'Uncapped', bowlingStyle: 'Left-arm fast' },
   { id: 'bowl_94', name: 'Akash Deep', role: 'BOWL', basePrice: 0.5, status: 'pending', cappedStatus: 'Uncapped', bowlingStyle: 'Right-arm fast' },
-  { id: 'bowl_95', name: 'Vidwath Kaverappa', role: 'BOWL', basePrice: 0.5, status: 'pending', cappedStatus: 'Uncapped', battingStyle: undefined, bowlingStyle: 'Right-arm medium' },
+  { id: 'bowl_95', name: 'Vidwath Kaverappa', role: 'BOWL', basePrice: 0.5, status: 'pending', cappedStatus: 'Uncapped', bowlingStyle: 'Right-arm medium' },
   { id: 'bowl_96', name: 'Rajan Kumar', role: 'BOWL', basePrice: 0.5, status: 'pending', cappedStatus: 'Uncapped', bowlingStyle: 'Left-arm medium' },
   { id: 'bowl_97', name: 'Himanshu Sharma', role: 'BOWL', basePrice: 0.5, status: 'pending', cappedStatus: 'Uncapped', bowlingStyle: 'Right-arm legbreak' },
   { id: 'bowl_98', name: 'M Siddharth', role: 'BOWL', basePrice: 0.5, status: 'pending', cappedStatus: 'Uncapped', bowlingStyle: 'Slow left-arm orthodox' },
@@ -399,6 +399,8 @@ export const ALL_350_PLAYERS: Player[] = [
 // Preserving legacy aliases so all existing imports continue working seamlessly
 export const ALL_300_PLAYERS = ALL_350_PLAYERS;
 export const DEFAULT_100_PLAYERS = ALL_350_PLAYERS;
+export const DEFAULT_PLAYERS = ALL_350_PLAYERS;
+
 export const DEFAULT_TEAMS_LIST = [
   { id: 'csk', name: 'Chennai Super Kings', shortName: 'CSK' },
   { id: 'mi', name: 'Mumbai Indians', shortName: 'MI' },
