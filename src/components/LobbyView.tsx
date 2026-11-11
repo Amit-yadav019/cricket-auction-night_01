@@ -33,7 +33,6 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
   const [actionError, setActionError] = useState('');
   const [starting, setStarting] = useState(false);
 
-  // Teams array guaranteed to be populated with IDs and names
   const teamsList: Team[] = Array.isArray(room?.teams) ? room.teams : [];
   const allPlayersList = room?.allPlayers || room?.playerPool || [];
 
@@ -61,9 +60,15 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
     }
   };
 
+  // Check if current user already claimed a team
   const myClaimedTeam = teamsList.find((t) => t && t.ownerToken === ownerToken);
 
   const handleClaimSubmit = async (teamId: string) => {
+    if (myClaimedTeam) {
+      setActionError('You already own a team. Release it first to claim another.');
+      return;
+    }
+
     const trimmedName = claimNameInput.trim();
     if (!trimmedName) {
       setActionError('Please enter your name first');
@@ -81,8 +86,7 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
   };
 
   const handleRelease = async (teamId: string) => {
-    if (!isHost) return;
-    const res = await releaseTeam(room.code, teamId, hostToken);
+    const res = await releaseTeam(room.code, teamId, isHost ? hostToken : ownerToken);
     if (!res.success) {
       setActionError(res.error || 'Failed to release team');
     }
@@ -160,13 +164,22 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
               </div>
             </div>
           </div>
-          <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-200 dark:bg-emerald-900 text-emerald-900 dark:text-emerald-100">
-            Ready
-          </span>
+          <div className="flex items-center space-x-2">
+            <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-200 dark:bg-emerald-900 text-emerald-900 dark:text-emerald-100">
+              Ready
+            </span>
+            <button
+              type="button"
+              onClick={() => handleRelease(myClaimedTeam.id)}
+              className="px-2.5 py-1 text-xs font-bold text-red-600 hover:text-red-800 hover:underline cursor-pointer"
+            >
+              Release
+            </button>
+          </div>
         </div>
       )}
 
-      {/* Name Input (if not claimed) */}
+      {/* Name Input (only visible if user has NOT claimed a team yet) */}
       {!myClaimedTeam && (
         <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-2xl p-4 shadow-xs">
           <label className="block text-xs font-bold text-[var(--color-text-muted)] mb-1.5">
@@ -238,7 +251,8 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
                 </div>
 
                 <div className="flex items-center space-x-2 flex-shrink-0">
-                  {!isClaimed && (
+                  {/* Single team claim restriction: Button shows only if team is unclaimed AND user hasn't claimed any team yet */}
+                  {!isClaimed && !myClaimedTeam && (
                     <button
                       type="button"
                       disabled={claiming}

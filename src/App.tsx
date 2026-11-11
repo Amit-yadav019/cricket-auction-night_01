@@ -3,7 +3,7 @@
  * @license Apache-2.0
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Header } from './components/Header';
 import { HomeView } from './components/HomeView';
 import { HostSetupView } from './components/HostSetupView';
@@ -47,18 +47,15 @@ export default function App() {
 
   // Initialize Auth & Tokens on mount
   useEffect(() => {
-    // Check anonymous auth
-    initAnonymousAuth().then(({ user, error }) => {
+    initAnonymousAuth().then(({ error }) => {
       if (error) setAuthError(error);
     });
 
     testConnection().catch((err) => console.warn('Conn test note:', err));
 
-    // Stored owner name
     const storedOwnerName = localStorage.getItem('cricket_owner_name') || '';
     if (storedOwnerName) setOwnerName(storedOwnerName);
 
-    // Parse URL params
     const params = new URLSearchParams(window.location.search);
     const roomParam = params.get('room')?.toUpperCase();
     const hostParam = params.get('host');
@@ -67,7 +64,6 @@ export default function App() {
     if (roomParam) {
       setRoomCode(roomParam);
 
-      // Check host credentials
       const savedHostToken =
         hostParam || localStorage.getItem(`cricket_host_token_${roomParam}`) || '';
       if (savedHostToken) {
@@ -76,7 +72,6 @@ export default function App() {
         localStorage.setItem(`cricket_host_token_${roomParam}`, savedHostToken);
       }
 
-      // Check owner token
       let savedOwnerToken = localStorage.getItem(`cricket_owner_token_${roomParam}`);
       if (!savedOwnerToken) {
         savedOwnerToken = generateOwnerToken();
@@ -86,12 +81,10 @@ export default function App() {
 
       setViewState('room');
     } else if (autostart === '1') {
-      // Autostart parameter for fast test verification
       handleQuickDemoRoom();
     }
   }, []);
 
-  // Quick demo room generator for fast autostart
   const handleQuickDemoRoom = async () => {
     const demoCode = generateRoomCode();
     const demoHostToken = generateHostToken();
@@ -125,13 +118,13 @@ export default function App() {
       return team;
     });
 
-   await createAuctionRoom(
-  demoCode,
-  settings,
-  teams,
-  DEFAULT_100_PLAYERS.slice(0, 16),
-  demoHostToken
-);
+    await createAuctionRoom(
+      demoCode,
+      settings,
+      teams,
+      DEFAULT_100_PLAYERS.slice(0, 16),
+      demoHostToken
+    );
 
     localStorage.setItem(`cricket_host_token_${demoCode}`, demoHostToken);
     localStorage.setItem(`cricket_owner_token_${demoCode}`, demoOwnerToken);
@@ -142,37 +135,37 @@ export default function App() {
     setViewState('room');
   };
 
-  // Subscribe to room doc via onSnapshot
+  // Subscribe to room doc
   useEffect(() => {
     if (!roomCode) return;
 
     setLoading(true);
-    const unsubscribe = subscribeToRoom(
-      roomCode,
-      (updatedRoom) => {
-        setLoading(false);
-        if (updatedRoom) {
-          setRoom(updatedRoom);
-          setConnectionError('');
+    const unsubscribe = subscribeToRoom(roomCode, (updatedRoom) => {
+      setLoading(false);
+      if (updatedRoom) {
+        setRoom(updatedRoom);
+        setConnectionError('');
 
-          // Verify host authority
-          const storedHostToken =
-            hostToken || localStorage.getItem(`cricket_host_token_${roomCode}`);
-          if (storedHostToken && updatedRoom.hostToken === storedHostToken) {
-            setIsHost(true);
-            setHostToken(storedHostToken);
-          } else {
-            setIsHost(false);
-          }
+        const params = new URLSearchParams(window.location.search);
+        const urlHostToken = params.get('host');
+        const storedHostToken =
+          urlHostToken || hostToken || localStorage.getItem(`cricket_host_token_${roomCode}`) || '';
+
+        if (
+          storedHostToken &&
+          updatedRoom.hostToken &&
+          updatedRoom.hostToken === storedHostToken
+        ) {
+          setIsHost(true);
+          setHostToken(storedHostToken);
+          localStorage.setItem(`cricket_host_token_${roomCode}`, storedHostToken);
         } else {
-          setConnectionError(`Room "${roomCode}" not found. Please verify the room code.`);
+          setIsHost(false);
         }
-      },
-      (err) => {
-        setLoading(false);
-        setConnectionError('Connection lost. Reconnecting...');
+      } else {
+        setConnectionError(`Room "${roomCode}" not found. Please verify the room code.`);
       }
-    );
+    });
 
     return () => unsubscribe();
   }, [roomCode, hostToken]);
@@ -188,7 +181,6 @@ export default function App() {
     return () => clearInterval(interval);
   }, [isHost, roomCode, hostToken]);
 
-  // Join existing room
   const handleJoinRoom = (code: string) => {
     const clean = code.trim().toUpperCase();
     let savedOwnerToken = localStorage.getItem(`cricket_owner_token_${clean}`);
@@ -210,12 +202,10 @@ export default function App() {
     setRoomCode(clean);
     setViewState('room');
 
-    // Update URL query without full reload
     const newUrl = `${window.location.pathname}?room=${clean}`;
     window.history.pushState({}, '', newUrl);
   };
 
-  // Create new auction room from Host Setup View
   const handleCreateRoom = async (
     settings: AuctionSettings,
     teams: Team[],
@@ -226,25 +216,22 @@ export default function App() {
       const code = generateRoomCode();
       const token = generateHostToken();
 
-      // Automatically assign owner token for host
       let myOwnerToken = localStorage.getItem(`cricket_owner_token_${code}`);
       if (!myOwnerToken) {
         myOwnerToken = generateOwnerToken();
         localStorage.setItem(`cricket_owner_token_${code}`, myOwnerToken);
       }
       setOwnerToken(myOwnerToken);
-        await createAuctionRoom(code,settings,teams, selectedPlayers,hostToken);
 
+      // Pass the generated 'token' directly so Firestore stores the host token correctly
+      await createAuctionRoom(code, settings, teams, selectedPlayers, token);
 
-
-      // Persist host token
       localStorage.setItem(`cricket_host_token_${code}`, token);
       setHostToken(token);
       setIsHost(true);
       setRoomCode(code);
       setViewState('room');
 
-      // Update URL with host token in browser address bar (so refresh preserves host)
       const hostUrl = `${window.location.pathname}?room=${code}&host=${token}`;
       window.history.pushState({}, '', hostUrl);
     } catch (err: any) {
@@ -277,7 +264,6 @@ export default function App() {
       />
 
       <main className="flex-1 pb-10">
-        {/* Loading overlay */}
         {loading && !room && (
           <div className="flex flex-col items-center justify-center py-20 space-y-3">
             <div className="w-10 h-10 border-4 border-[var(--color-primary)] border-t-transparent rounded-full animate-spin"></div>
@@ -287,7 +273,6 @@ export default function App() {
           </div>
         )}
 
-        {/* Connection or room error */}
         {connectionError && (
           <div className="max-w-[540px] mx-auto px-4 mt-6">
             <div className="p-4 bg-red-50 dark:bg-red-950/60 border border-red-300 dark:border-red-800 rounded-2xl text-center space-y-2">
@@ -302,7 +287,6 @@ export default function App() {
           </div>
         )}
 
-        {/* 1. HOME VIEW */}
         {viewState === 'home' && !loading && (
           <HomeView
             onHostNew={() => setViewState('setup')}
@@ -312,7 +296,6 @@ export default function App() {
           />
         )}
 
-        {/* 2. HOST SETUP VIEW */}
         {viewState === 'setup' && (
           <HostSetupView
             onBack={() => setViewState('home')}
@@ -321,7 +304,6 @@ export default function App() {
           />
         )}
 
-        {/* 3. ROOM VIEW */}
         {viewState === 'room' && room && !loading && (
           <>
             {room.status === 'lobby' ? (
@@ -341,7 +323,6 @@ export default function App() {
                 onOpenSummary={() => setIsSummaryOpen(true)}
               />
             ) : (
-              // Active Auction or Round Ended
               <>
                 {auctionTab === 'auction' && (
                   <AuctionView
@@ -358,7 +339,6 @@ export default function App() {
 
                 {auctionTab === 'squads' && (
                   <div className="space-y-3">
-                    {/* Navigation Tabs Bar */}
                     <div className="max-w-[540px] mx-auto px-4 pt-3">
                       <div className="grid grid-cols-4 gap-1 bg-[var(--color-surface-subtle)] p-1 rounded-xl border border-[var(--color-border)]">
                         <button
@@ -435,7 +415,6 @@ export default function App() {
         )}
       </main>
 
-      {/* Live Auction Financial & Roster Summary Modal */}
       {room && (
         <AuctionSummaryModal
           isOpen={isSummaryOpen}
@@ -444,7 +423,6 @@ export default function App() {
         />
       )}
 
-      {/* Firebase Setup & Free Hosting Guide Modal */}
       <FirebaseHelperModal
         isOpen={isFirebaseGuideOpen}
         onClose={() => setIsFirebaseGuideOpen(false)}
