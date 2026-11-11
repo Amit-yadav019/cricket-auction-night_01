@@ -399,3 +399,15 @@ export const ALL_350_PLAYERS: Player[] = [
 // Preserving legacy aliases so all existing imports continue working seamlessly
 export const ALL_300_PLAYERS = ALL_350_PLAYERS;
 export const DEFAULT_100_PLAYERS = ALL_350_PLAYERS;
+export const DEFAULT_TEAMS_LIST = [
+  { id: 'csk', name: 'Chennai Super Kings', shortName: 'CSK' },
+  { id: 'mi', name: 'Mumbai Indians', shortName: 'MI' },
+  { id: 'rcb', name: 'Royal Challengers Bengaluru', shortName: 'RCB' },
+  { id: 'kkr', name: 'Kolkata Knight Riders', shortName: 'KKR' },
+  { id: 'dc', name: 'Delhi Capitals', shortName: 'DC' },
+  { id: 'rr', name: 'Rajasthan Royals', shortName: 'RR' },
+  { id: 'gt', name: 'Gujarat Titans', shortName: 'GT' },
+  { id: 'lsg', name: 'Lucknow Super Giants', shortName: 'LSG' },
+  { id: 'srh', name: 'Sunrisers Hyderabad', shortName: 'SRH' },
+  { id: 'pbks', name: 'Punjab Kings', shortName: 'PBKS' },
+];
