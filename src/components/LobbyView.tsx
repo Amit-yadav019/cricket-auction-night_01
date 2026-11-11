@@ -33,11 +33,8 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
   const [actionError, setActionError] = useState('');
   const [starting, setStarting] = useState(false);
 
-  // Normalize teams whether Firestore returned an Array or an Object Map
-  const teamsList: Team[] = Array.isArray(room?.teams)
-    ? (room.teams as Team[])
-    : Object.values(room?.teams || {});
-
+  // Teams array guaranteed to be populated with IDs and names
+  const teamsList: Team[] = Array.isArray(room?.teams) ? room.teams : [];
   const allPlayersList = room?.allPlayers || room?.playerPool || [];
 
   const shareableUrl = `${window.location.origin}${window.location.pathname}?room=${room?.code || ''}`;
@@ -201,14 +198,15 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
         </div>
 
         <div className="space-y-2">
-          {teamsList.map((team) => {
+          {teamsList.map((team, index) => {
             if (!team) return null;
+            const teamId = team.id || `team_${index}`;
             const isMine = team.ownerToken === ownerToken;
-            const isClaimed = !!team.claimedByOwnerName;
+            const isClaimed = Boolean(team.claimedByOwnerName);
 
             return (
               <div
-                key={team.id}
+                key={teamId}
                 className={`p-3 rounded-xl border flex items-center justify-between transition ${
                   isMine
                     ? 'border-emerald-500 bg-emerald-50/50 dark:bg-emerald-950/20'
@@ -219,11 +217,11 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
               >
                 <div className="flex items-center space-x-3 truncate">
                   <div className="w-9 h-9 rounded-lg bg-[var(--color-surface-elevated)] border border-[var(--color-border)] flex items-center justify-center font-display font-black text-xs text-[var(--color-primary)] flex-shrink-0">
-                    {team.shortName}
+                    {team.shortName || 'TM'}
                   </div>
                   <div className="truncate">
                     <div className="text-xs font-bold text-[var(--color-text-main)] truncate">
-                      {team.name}
+                      {team.name || 'Team'}
                     </div>
                     <div className="text-[11px] text-[var(--color-text-muted)] flex items-center space-x-1">
                       {isClaimed ? (
@@ -244,8 +242,8 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
                     <button
                       type="button"
                       disabled={claiming}
-                      onClick={() => handleClaimSubmit(team.id)}
-                      className="px-3.5 py-1.5 rounded-lg bg-[var(--color-primary)] text-white hover:bg-[var(--color-primary-hover)] font-display text-xs font-bold uppercase tracking-wider min-h-[38px] transition cursor-pointer"
+                      onClick={() => handleClaimSubmit(teamId)}
+                      className="px-3.5 py-1.5 rounded-lg bg-[var(--color-primary)] text-white hover:bg-[var(--color-primary-hover)] font-display text-xs font-bold uppercase tracking-wider min-h-[38px] transition cursor-pointer active:scale-95"
                     >
                       {claiming ? 'Claiming...' : 'Claim Team'}
                     </button>
@@ -254,9 +252,9 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
                   {isHost && isClaimed && (
                     <button
                       type="button"
-                      onClick={() => handleRelease(team.id)}
+                      onClick={() => handleRelease(teamId)}
                       title="Release team phone"
-                      className="px-2.5 py-1.5 rounded-lg bg-red-100 dark:bg-red-950/60 text-red-700 dark:text-red-300 hover:bg-red-200 text-xs font-semibold min-h-[36px]"
+                      className="px-2.5 py-1.5 rounded-lg bg-red-100 dark:bg-red-950/60 text-red-700 dark:text-red-300 hover:bg-red-200 text-xs font-semibold min-h-[36px] cursor-pointer"
                     >
                       Release
                     </button>

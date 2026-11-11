@@ -70,33 +70,39 @@ export function generateOwnerToken(): string {
 }
 
 // ----------------------------------------------------------------------------
-// Team Normalizer
+// Team Normalizer: Preserves team ID and all fields
 // ----------------------------------------------------------------------------
 export function normalizeTeamsArray(rawTeams: any): Team[] {
   if (!rawTeams) return [];
-  if (Array.isArray(rawTeams)) return rawTeams.filter(Boolean);
-  return Object.values(rawTeams).filter(Boolean) as Team[];
-}
-
-function findTeamSafely(rawTeams: any, teamId: string): { team: Team | undefined; index: number | string } {
-  if (!rawTeams || !teamId) return { team: undefined, index: -1 };
 
   if (Array.isArray(rawTeams)) {
-    const idx = rawTeams.findIndex((t: Team) => t && (t.id === teamId || t.name === teamId));
-    return { team: rawTeams[idx], index: idx };
+    return rawTeams
+      .filter(Boolean)
+      .map((t, idx) => ({
+        id: t.id || t.shortName || `team_${idx}`,
+        name: t.name || t.teamName || 'Unknown Team',
+        shortName: t.shortName || t.short_name || (t.name ? t.name.slice(0, 3).toUpperCase() : 'TM'),
+        purse: typeof t.purse === 'number' ? t.purse : 20,
+        spent: typeof t.spent === 'number' ? t.spent : 0,
+        players: Array.isArray(t.players) ? t.players : [],
+        claimedByOwnerName: t.claimedByOwnerName || undefined,
+        ownerToken: t.ownerToken || undefined,
+      }));
   }
 
-  if (rawTeams[teamId]) {
-    return { team: rawTeams[teamId], index: teamId };
-  }
-
-  const entries = Object.entries(rawTeams);
-  const found = entries.find(([_, t]: [string, any]) => t && (t.id === teamId || t.name === teamId));
-  if (found) {
-    return { team: found[1] as Team, index: found[0] };
-  }
-
-  return { team: undefined, index: -1 };
+  // Object map
+  return Object.entries(rawTeams)
+    .filter(([_, t]) => Boolean(t))
+    .map(([key, t]: [string, any]) => ({
+      id: t.id || key,
+      name: t.name || t.teamName || key,
+      shortName: t.shortName || t.short_name || key.slice(0, 3).toUpperCase(),
+      purse: typeof t.purse === 'number' ? t.purse : 20,
+      spent: typeof t.spent === 'number' ? t.spent : 0,
+      players: Array.isArray(t.players) ? t.players : [],
+      claimedByOwnerName: t.claimedByOwnerName || undefined,
+      ownerToken: t.ownerToken || undefined,
+    }));
 }
 
 function resolveRoomCode(passedCode?: string): string {
@@ -140,7 +146,10 @@ export async function createAuctionRoom(
 }
 
 export function subscribeToRoom(roomCode: string, onUpdate: (data: RoomData | null) => void) {
-  const roomRef = doc(db, 'rooms', roomCode);
+  const code = resolveRoomCode(roomCode);
+  if (!code) return () => {};
+
+  const roomRef = doc(db, 'rooms', code);
   return onSnapshot(
     roomRef,
     (snap) => {
@@ -186,39 +195,29 @@ export async function claimTeamTransaction(
 ): Promise<{ success: boolean; error?: string }> {
   const code = resolveRoomCode(roomCode);
   const roomRef = doc(db, 'rooms', code);
+
   try {
     return await runTransaction(db, async (transaction) => {
       const snap = await transaction.get(roomRef);
       if (!snap.exists()) throw new Error('Room not found');
 
       const room = snap.data() as any;
-      const { team, index } = findTeamSafely(room.teams, teamId);
-      if (!team) throw new Error('Team not found');
+      const normalized = normalizeTeamsArray(room.teams);
+      const teamIdx = normalized.findIndex(
+        (t) => t.id === teamId || t.name === teamId || t.shortName === teamId
+      );
 
-      let updatedTeams: any;
-      if (Array.isArray(room.teams)) {
-        updatedTeams = room.teams.map((t: Team) => {
-          if (t.id === teamId) {
-            return {
-              ...t,
-              claimedByOwnerName: ownerName,
-              ownerToken,
-            };
-          }
-          return t;
-        });
-      } else {
-        updatedTeams = { ...room.teams };
-        if (index !== -1) {
-          updatedTeams[index] = {
-            ...team,
-            claimedByOwnerName: ownerName,
-            ownerToken,
-          };
-        }
+      if (teamIdx === -1) {
+        throw new Error('Team not found');
       }
 
-      transaction.update(roomRef, { teams: updatedTeams });
+      normalized[teamIdx] = {
+        ...normalized[teamIdx],
+        claimedByOwnerName: ownerName,
+        ownerToken,
+      };
+
+      transaction.update(roomRef, { teams: normalized });
       return { success: true };
     });
   } catch (err: any) {
@@ -235,31 +234,24 @@ export async function releaseTeamTransaction(
 ): Promise<{ success: boolean; error?: string }> {
   const code = resolveRoomCode(roomCode);
   const roomRef = doc(db, 'rooms', code);
+
   try {
     return await runTransaction(db, async (transaction) => {
       const snap = await transaction.get(roomRef);
       if (!snap.exists()) throw new Error('Room not found');
 
       const room = snap.data() as any;
-      let updatedTeams: any;
-      if (Array.isArray(room.teams)) {
-        updatedTeams = room.teams.map((t: Team) => {
-          if (t.id === teamId && (t.ownerToken === ownerToken || !ownerToken)) {
-            const { claimedByOwnerName, ownerToken: tok, ...rest } = t;
-            return rest as Team;
-          }
-          return t;
-        });
-      } else {
-        updatedTeams = { ...room.teams };
-        const { team, index } = findTeamSafely(room.teams, teamId);
-        if (team && index !== -1) {
-          const { claimedByOwnerName, ownerToken: tok, ...rest } = team;
-          updatedTeams[index] = rest;
-        }
-      }
+      const normalized = normalizeTeamsArray(room.teams);
+      const teamIdx = normalized.findIndex(
+        (t) => t.id === teamId || t.name === teamId || t.shortName === teamId
+      );
 
-      transaction.update(roomRef, { teams: updatedTeams });
+      if (teamIdx === -1) throw new Error('Team not found');
+
+      const { claimedByOwnerName, ownerToken: tok, ...rest } = normalized[teamIdx];
+      normalized[teamIdx] = rest as Team;
+
+      transaction.update(roomRef, { teams: normalized });
       return { success: true };
     });
   } catch (err: any) {
@@ -275,6 +267,7 @@ export async function startBiddingTransaction(
 ): Promise<{ success: boolean; error?: string }> {
   const code = resolveRoomCode(roomCode);
   const roomRef = doc(db, 'rooms', code);
+
   try {
     return await runTransaction(db, async (transaction) => {
       const snap = await transaction.get(roomRef);
@@ -323,17 +316,14 @@ export async function placeBidTransaction(
   if (!roomCode) {
     return { success: false, error: 'Room code could not be determined.' };
   }
-  if (!teamId) {
-    return { success: false, error: 'Please choose or claim a team to bid.' };
-  }
 
   const roomRef = doc(db, 'rooms', roomCode);
 
   try {
-    const result = await runTransaction(db, async (transaction) => {
+    return await runTransaction(db, async (transaction) => {
       const roomSnap = await transaction.get(roomRef);
       if (!roomSnap.exists()) {
-        throw new Error(`Room "${roomCode}" not found in database.`);
+        throw new Error(`Room "${roomCode}" not found.`);
       }
 
       const room = roomSnap.data() as any;
@@ -347,9 +337,13 @@ export async function placeBidTransaction(
         throw new Error('No active player on the podium.');
       }
 
-      const { team: biddingTeam } = findTeamSafely(room.teams, teamId);
+      const teams = normalizeTeamsArray(room.teams);
+      const biddingTeam = teams.find(
+        (t) => t.id === teamId || t.name === teamId || t.shortName === teamId
+      );
+
       if (!biddingTeam) {
-        throw new Error(`Team could not be found.`);
+        throw new Error('Team could not be found.');
       }
 
       const maxSquad = room.settings?.maxSquadSize || room.settings?.squadSize || 25;
@@ -368,7 +362,7 @@ export async function placeBidTransaction(
       }
 
       if (bidAmount > biddingTeam.purse) {
-        throw new Error(`Insufficient purse balance (₹${biddingTeam.purse} Cr available).`);
+        throw new Error(`Insufficient purse (₹${biddingTeam.purse} Cr available).`);
       }
 
       const bidRecord = {
@@ -390,8 +384,6 @@ export async function placeBidTransaction(
 
       return { success: true };
     });
-
-    return result;
   } catch (error: any) {
     return {
       success: false,
@@ -428,31 +420,18 @@ export async function markSoldTransaction(
         soldToTeamId: winningTeamId,
       };
 
-      let updatedTeams: any;
-      if (Array.isArray(room.teams)) {
-        updatedTeams = room.teams.map((t: Team) => {
-          if (t && t.id === winningTeamId) {
-            return {
-              ...t,
-              purse: Number((t.purse - winningAmount).toFixed(2)),
-              spent: Number(((t.spent || 0) + winningAmount).toFixed(2)),
-              players: [...(t.players || []), soldPlayer],
-            };
-          }
-          return t;
-        });
-      } else {
-        updatedTeams = { ...room.teams };
-        const { team: t, index: key } = findTeamSafely(room.teams, winningTeamId);
-        if (t && key !== -1) {
-          updatedTeams[key] = {
+      const teams = normalizeTeamsArray(room.teams);
+      const updatedTeams = teams.map((t) => {
+        if (t.id === winningTeamId || t.name === winningTeamId || t.shortName === winningTeamId) {
+          return {
             ...t,
             purse: Number((t.purse - winningAmount).toFixed(2)),
             spent: Number(((t.spent || 0) + winningAmount).toFixed(2)),
             players: [...(t.players || []), soldPlayer],
           };
         }
-      }
+        return t;
+      });
 
       const nextIndex = (room.currentPlayerIndex || 0) + 1;
       const pool = room.playerPool || room.allPlayers || [];
@@ -483,7 +462,7 @@ export async function markSoldTransaction(
       return { success: true };
     });
   } catch (err: any) {
-    return { success: false, error: err?.message || 'Failed to mark player as sold.' };
+    return { success: false, error: err?.message || 'Failed to mark sold.' };
   }
 }
 
@@ -536,7 +515,7 @@ export async function markUnsoldTransaction(
       return { success: true };
     });
   } catch (err: any) {
-    return { success: false, error: err?.message || 'Failed to mark player as unsold.' };
+    return { success: false, error: err?.message || 'Failed to mark unsold.' };
   }
 }
 
@@ -555,7 +534,7 @@ export async function undoLastBidTransaction(
       const room = snap.data() as any;
       const lot = room.currentLot;
       if (!lot || !lot.bidHistory || lot.bidHistory.length === 0) {
-        throw new Error('No bids placed to undo on this lot.');
+        throw new Error('No bids to undo.');
       }
 
       const newHistory = lot.bidHistory.slice(1);
@@ -610,7 +589,7 @@ export async function reAuctionUnsoldTransaction(
 
     return { success: true };
   } catch (err: any) {
-    return { success: false, error: err?.message || 'Failed to re-auction unsold players.' };
+    return { success: false, error: err?.message || 'Failed to re-auction unsold.' };
   }
 }
 
@@ -627,7 +606,7 @@ export async function endAuctionTransaction(
     });
     return { success: true };
   } catch (err: any) {
-    return { success: false, error: err?.message || 'Failed to conclude auction.' };
+    return { success: false, error: err?.message || 'Failed to end auction.' };
   }
 }
 
