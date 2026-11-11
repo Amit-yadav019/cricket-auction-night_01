@@ -396,14 +396,26 @@ export async function markSoldTransaction(
         return t;
       });
 
-      const nextIndex = (room.currentPlayerIndex || 0) + 1;
-      const pool = room.playerPool || room.allPlayers || [];
-      const hasNext = nextIndex < pool.length;
+      const pool: Player[] = room.playerPool || room.allPlayers || [];
+      const currentIndex = room.currentPlayerIndex || 0;
+
+      // Update sold player status across playerPool and allPlayers
+      const updatedPool = pool.map((p, idx) =>
+        idx === currentIndex || p.id === soldPlayer.id ? soldPlayer : p
+      );
+      const updatedAllPlayers = (room.allPlayers || pool).map((p: Player) =>
+        p.id === soldPlayer.id ? soldPlayer : p
+      );
+
+      const nextIndex = currentIndex + 1;
+      const hasNext = nextIndex < updatedPool.length;
 
       transaction.update(roomRef, cleanData({
         teams: updatedTeams,
+        playerPool: updatedPool,
+        allPlayers: updatedAllPlayers,
         currentPlayerIndex: nextIndex,
-        currentLot: hasNext ? { player: pool[nextIndex], currentBid: null, bidHistory: [] } : null,
+        currentLot: hasNext ? { player: updatedPool[nextIndex], currentBid: null, bidHistory: [] } : null,
         status: hasNext ? 'active' : 'round_ended',
         lastResult: {
           type: 'SOLD',
@@ -435,20 +447,32 @@ export async function markUnsoldTransaction(
 
       const room = snap.data() as any;
       const lot = room.currentLot;
-      if (!lot) throw new Error('No active lot');
+      if (!lot || !lot.player) throw new Error('No active lot');
 
-      const unsoldPlayer: Player = { ...lot.player, status: 'unsold' };
-      const nextIndex = (room.currentPlayerIndex || 0) + 1;
-      const pool = room.playerPool || room.allPlayers || [];
-      const hasNext = nextIndex < pool.length;
+      const pool: Player[] = room.playerPool || room.allPlayers || [];
+      const currentIndex = room.currentPlayerIndex || 0;
+      const currentUnsoldPlayer: Player = { ...lot.player, status: 'unsold' };
+
+      // Crucial: Update player with status 'unsold' in the pool arrays
+      const updatedPool = pool.map((p, idx) =>
+        idx === currentIndex || p.id === currentUnsoldPlayer.id ? currentUnsoldPlayer : p
+      );
+      const updatedAllPlayers = (room.allPlayers || pool).map((p: Player) =>
+        p.id === currentUnsoldPlayer.id ? currentUnsoldPlayer : p
+      );
+
+      const nextIndex = currentIndex + 1;
+      const hasNext = nextIndex < updatedPool.length;
 
       transaction.update(roomRef, cleanData({
+        playerPool: updatedPool,
+        allPlayers: updatedAllPlayers,
         currentPlayerIndex: nextIndex,
-        currentLot: hasNext ? { player: pool[nextIndex], currentBid: null, bidHistory: [] } : null,
+        currentLot: hasNext ? { player: updatedPool[nextIndex], currentBid: null, bidHistory: [] } : null,
         status: hasNext ? 'active' : 'round_ended',
         lastResult: {
           type: 'UNSOLD',
-          playerName: unsoldPlayer.name,
+          playerName: currentUnsoldPlayer.name,
           teamName: '',
           amount: 0,
           timestamp: Date.now(),
@@ -509,14 +533,22 @@ export async function reAuctionUnsoldTransaction(
     if (!snap.exists()) return { success: false, error: 'Room not found' };
 
     const room = snap.data() as any;
-    const pool = room.playerPool || room.allPlayers || [];
+    const pool: Player[] = room.playerPool || room.allPlayers || [];
+
+    // Filter all players that hold unsold status
     const unsold = pool.filter((p: Player) => p.status === 'unsold');
 
     if (unsold.length === 0) {
       return { success: false, error: 'No unsold players left to re-auction.' };
     }
 
-    const resetUnsold = unsold.map((p: Player) => ({ ...p, status: 'pending' as const }));
+    // Reset unsold players to pending for the new round
+    const resetUnsold = unsold.map((p: Player) => ({
+      ...p,
+      status: 'pending' as const,
+      soldPrice: undefined,
+      soldToTeamId: undefined,
+    }));
 
     await updateDoc(roomRef, cleanData({
       playerPool: resetUnsold,
@@ -528,6 +560,7 @@ export async function reAuctionUnsoldTransaction(
         currentBid: null,
         bidHistory: [],
       },
+      lastResult: null,
     }));
 
     return { success: true };
@@ -597,7 +630,6 @@ export async function resetAuctionTransaction(
   }
 }
 
-// Lineup & AI Tactical Scout Support
 export async function submitTeamLineupTransaction(
   roomCodeInput: string,
   teamId: string,

@@ -102,7 +102,11 @@ export function getNextBidIncrement(currentBid: number, rules = DEFAULT_INCREMEN
   return 1.0;
 }
 
-export function calculateNextValidBid(currentBid: number, basePrice: number, rules = DEFAULT_INCREMENT_RULES): number {
+export function calculateNextValidBid(
+  currentBid: number,
+  basePrice: number,
+  rules = DEFAULT_INCREMENT_RULES
+): number {
   if (currentBid <= 0) {
     return basePrice;
   }
@@ -110,7 +114,12 @@ export function calculateNextValidBid(currentBid: number, basePrice: number, rul
   return Number((currentBid + inc).toFixed(2));
 }
 
-export function getValidNextBids(currentBid: number, basePrice: number, count = 3, rules = DEFAULT_INCREMENT_RULES): number[] {
+export function getValidNextBids(
+  currentBid: number,
+  basePrice: number,
+  count = 3,
+  rules = DEFAULT_INCREMENT_RULES
+): number[] {
   const bids: number[] = [];
   let next = calculateNextValidBid(currentBid, basePrice, rules);
   for (let i = 0; i < count; i++) {
@@ -120,13 +129,24 @@ export function getValidNextBids(currentBid: number, basePrice: number, count = 
   return bids;
 }
 
-export function calculateMaxBid(team: Team, maxSquadSize = 25, reservePerSlot = 0.2): number {
-  const remainingSlots = Math.max(0, maxSquadSize - (team.players.length + 1));
+export function calculateMaxBid(
+  team: Team,
+  maxSquadSize = 25,
+  reservePerSlot = 0.2
+): number {
+  if (!team) return 0;
+  const currentCount = Array.isArray(team.players) ? team.players.length : 0;
+  const remainingSlots = Math.max(0, maxSquadSize - (currentCount + 1));
   const reserveNeeded = remainingSlots * reservePerSlot;
-  return Math.max(0, Number((team.purse - reserveNeeded).toFixed(2)));
+  return Math.max(0, Number(((team.purse || 0) - reserveNeeded).toFixed(2)));
 }
 
-export function canTeamAffordBid(team: Team, bidAmount: number, maxSquadSize = 25): boolean {
+export function canTeamAffordBid(
+  team: Team,
+  bidAmount: number,
+  maxSquadSize = 25
+): boolean {
+  if (!team) return false;
   return calculateMaxBid(team, maxSquadSize) >= bidAmount;
 }
 
@@ -135,6 +155,10 @@ export function validateBid(
   teamId: string,
   amount: number
 ): { valid: boolean; reason?: string } {
+  if (!room || !room.teams) {
+    return { valid: false, reason: 'Room or teams not ready' };
+  }
+
   const team = room.teams[teamId];
   if (!team) {
     return { valid: false, reason: 'Team not found' };
@@ -144,21 +168,28 @@ export function validateBid(
     return { valid: false, reason: 'Auction is not active' };
   }
 
-  if (team.players.length >= room.maxSquadSize) {
+  const squadCount = Array.isArray(team.players) ? team.players.length : 0;
+  if (squadCount >= (room.maxSquadSize || 25)) {
     return { valid: false, reason: 'Squad limit reached' };
   }
 
-  const currentPlayer = room.playerPool[room.currentPlayerIndex];
+  const pool = room.playerPool || [];
+  const idx = Number(room.currentPlayerIndex);
+  const currentPlayer = pool[idx];
   if (!currentPlayer) {
     return { valid: false, reason: 'No player currently on auction' };
   }
 
-  const minBid = room.currentBid <= 0 ? currentPlayer.basePrice : calculateNextValidBid(room.currentBid, currentPlayer.basePrice);
+  const minBid =
+    room.currentBid <= 0
+      ? currentPlayer.basePrice
+      : calculateNextValidBid(room.currentBid, currentPlayer.basePrice);
+
   if (amount < minBid) {
     return { valid: false, reason: `Bid must be at least ₹${minBid} Cr` };
   }
 
-  if (!canTeamAffordBid(team, amount, room.maxSquadSize)) {
+  if (!canTeamAffordBid(team, amount, room.maxSquadSize || 25)) {
     return { valid: false, reason: 'Insufficient purse balance after reserve requirements' };
   }
 
@@ -166,12 +197,15 @@ export function validateBid(
 }
 
 export function isAuctionComplete(room: AuctionRoomState): boolean {
+  if (!room) return false;
   if (room.status === 'completed') return true;
-  if (!room.playerPool || room.playerPool.length === 0) return true;
-  return room.currentPlayerIndex >= room.playerPool.length;
+  const pool = room.playerPool || [];
+  if (pool.length === 0) return true;
+  return (room.currentPlayerIndex || 0) >= pool.length;
 }
 
 export function parseCustomPlayers(csvOrText: string): Player[] {
+  if (!csvOrText) return [];
   const lines = csvOrText.split('\n').map((l) => l.trim()).filter(Boolean);
   const players: Player[] = [];
 
@@ -201,6 +235,7 @@ export function parseCustomPlayers(csvOrText: string): Player[] {
 }
 
 export function pickRandomBalanced(pool: Player[], totalCount: number): Player[] {
+  if (!pool || pool.length === 0) return [];
   if (pool.length <= totalCount) return [...pool];
 
   const byRole: Record<PlayerRole, Player[]> = {
@@ -233,7 +268,7 @@ export function pickRandomBalanced(pool: Player[], totalCount: number): Player[]
   // 3. Reconcile remainder to guarantee exact totalCount sum
   let currentAllocated = targets.reduce((sum, t) => sum + t.allocated, 0);
 
-  // If minimum guarantees caused over-allocation, decrement largest surplus
+  // If minimum guarantees caused over-allocation, decrement from the ones with least remainder
   while (currentAllocated > totalCount) {
     targets.sort((a, b) => (a.fractional - a.allocated) - (b.fractional - b.allocated));
     for (const t of targets) {

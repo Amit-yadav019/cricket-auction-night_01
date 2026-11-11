@@ -222,9 +222,10 @@ export default function App() {
         localStorage.setItem(`cricket_owner_token_${code}`, myOwnerToken);
       }
       setOwnerToken(myOwnerToken);
+      await createAuctionRoom(code, settings, teams, selectedPlayers, token);
 
       // Pass the generated 'token' directly so Firestore stores the host token correctly
-      await createAuctionRoom(code, settings, teams, selectedPlayers, token);
+    
 
       localStorage.setItem(`cricket_host_token_${code}`, token);
       setHostToken(token);

@@ -11,7 +11,7 @@ import { RoomData } from '../services/auctionService';
 import { sound } from '../services/soundService';
 
 interface HeaderProps {
-  room: RoomData;
+  room: RoomData | null;
   isHost: boolean;
   onOpenSummary?: () => void;
 }
@@ -30,6 +30,7 @@ export const Header: React.FC<HeaderProps> = ({
   });
 
   const handleCopyCode = async () => {
+    if (!room?.code) return;
     try {
       await navigator.clipboard.writeText(room.code);
       setCopied(true);
@@ -45,7 +46,7 @@ export const Header: React.FC<HeaderProps> = ({
       try {
         await navigator.share({
           title: 'Cricket Auction Night',
-          text: `Join my cricket auction room with code ${room.code}!`,
+          text: room?.code ? `Join my cricket auction room with code ${room.code}!` : 'Join my cricket auction!',
           url,
         });
       } catch {
@@ -68,18 +69,18 @@ export const Header: React.FC<HeaderProps> = ({
     }
   };
 
-  // Safe numerical calculations to prevent "Lot NaN of ..."
-  const pool = room.playerPool || room.allPlayers || [];
+  // Safe numerical calculations guarded against room being null or loading
+  const pool = room?.playerPool || room?.allPlayers || [];
   const poolLength = pool.length;
-  const rawIndex = Number(room.currentPlayerIndex);
+  const rawIndex = Number(room?.currentPlayerIndex);
   const safeCurrentIndex = Number.isNaN(rawIndex) ? 0 : rawIndex;
 
   const displayLotNumber =
-    room.status === 'round_ended' || room.status === 'completed'
+    room?.status === 'round_ended' || room?.status === 'completed'
       ? poolLength
       : Math.min(safeCurrentIndex + 1, poolLength > 0 ? poolLength : 1);
 
-  const totalSold = (room.teams || []).reduce(
+  const totalSold = (room?.teams || []).reduce(
     (sum, t) => sum + (t.players ? t.players.length : 0),
     0
   );
@@ -98,7 +99,7 @@ export const Header: React.FC<HeaderProps> = ({
               Auction Night
             </h1>
             <p className="text-[11px] text-[var(--color-text-muted)] font-mono mt-0.5">
-              {room.status === 'lobby' ? (
+              {!room || room.status === 'lobby' ? (
                 'Waiting in Lobby'
               ) : (
                 <>
@@ -115,29 +116,33 @@ export const Header: React.FC<HeaderProps> = ({
         {/* Global Action Controls */}
         <div className="flex items-center space-x-2">
           {/* Share Room Button */}
-          <button
-            type="button"
-            onClick={handleShare}
-            className="hidden sm:inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-[var(--color-surface-subtle)] hover:bg-[var(--color-surface-elevated)] border border-[var(--color-border)] text-xs font-bold font-display uppercase text-[var(--color-text-main)] transition cursor-pointer shadow-xs active:scale-95"
-          >
-            <Share2 className="w-3.5 h-3.5 text-[var(--color-text-muted)]" />
-            <span>Share</span>
-          </button>
+          {room?.code && (
+            <button
+              type="button"
+              onClick={handleShare}
+              className="hidden sm:inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-[var(--color-surface-subtle)] hover:bg-[var(--color-surface-elevated)] border border-[var(--color-border)] text-xs font-bold font-display uppercase text-[var(--color-text-main)] transition cursor-pointer shadow-xs active:scale-95"
+            >
+              <Share2 className="w-3.5 h-3.5 text-[var(--color-text-muted)]" />
+              <span>Share</span>
+            </button>
+          )}
 
           {/* Copy Room Code Button */}
-          <button
-            type="button"
-            onClick={handleCopyCode}
-            className="inline-flex items-center space-x-1 px-2.5 py-1.5 rounded-xl bg-[var(--color-surface-subtle)] hover:bg-[var(--color-surface-elevated)] border border-[var(--color-border)] text-xs font-mono font-bold text-[var(--color-text-main)] transition cursor-pointer shadow-xs active:scale-95"
-            title="Click to copy Room Code"
-          >
-            <span>{room.code}</span>
-            {copied ? (
-              <Check className="w-3.5 h-3.5 text-emerald-500" />
-            ) : (
-              <Copy className="w-3.5 h-3.5 text-[var(--color-text-muted)]" />
-            )}
-          </button>
+          {room?.code && (
+            <button
+              type="button"
+              onClick={handleCopyCode}
+              className="inline-flex items-center space-x-1 px-2.5 py-1.5 rounded-xl bg-[var(--color-surface-subtle)] hover:bg-[var(--color-surface-elevated)] border border-[var(--color-border)] text-xs font-mono font-bold text-[var(--color-text-main)] transition cursor-pointer shadow-xs active:scale-95"
+              title="Click to copy Room Code"
+            >
+              <span>{room.code}</span>
+              {copied ? (
+                <Check className="w-3.5 h-3.5 text-emerald-500" />
+              ) : (
+                <Copy className="w-3.5 h-3.5 text-[var(--color-text-muted)]" />
+              )}
+            </button>
+          )}
 
           {/* Summary Modal Toggle */}
           {onOpenSummary && (
