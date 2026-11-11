@@ -125,13 +125,13 @@ export default function App() {
       return team;
     });
 
-    await createAuctionRoom(
-      demoCode,
-      demoHostToken,
-      settings,
-      teams,
-      DEFAULT_100_PLAYERS.slice(0, 16)
-    );
+   await createAuctionRoom(
+  demoCode,
+  settings,
+  teams,
+  DEFAULT_100_PLAYERS.slice(0, 16),
+  demoHostToken
+);
 
     localStorage.setItem(`cricket_host_token_${demoCode}`, demoHostToken);
     localStorage.setItem(`cricket_owner_token_${demoCode}`, demoOwnerToken);
@@ -233,8 +233,9 @@ export default function App() {
         localStorage.setItem(`cricket_owner_token_${code}`, myOwnerToken);
       }
       setOwnerToken(myOwnerToken);
+        await createAuctionRoom(code,settings,teams, selectedPlayers,hostToken);
 
-      await createAuctionRoom(code, token, settings, teams, selectedPlayers);
+
 
       // Persist host token
       localStorage.setItem(`cricket_host_token_${code}`, token);
