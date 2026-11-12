@@ -776,3 +776,23 @@ export async function respondTradeTransaction(
     return { success: false, error: err?.message || 'Failed to process trade.' };
   }
   }
+
+  export async function toggleThinkingTimeTransaction(
+  roomCodeInput: string,
+  teamId: string,
+  teamName: string,
+  needsTime: boolean
+): Promise<{ success: boolean }> {
+  const roomCode = roomCodeInput.trim().toUpperCase();
+  const roomRef = doc(db, 'rooms', roomCode);
+  try {
+    await updateDoc(roomRef, {
+      thinkingAlert: needsTime
+        ? { teamId, teamName, timestamp: Date.now() }
+        : null,
+    });
+    return { success: true };
+  } catch {
+    return { success: false };
+  }
+}

@@ -10,6 +10,7 @@ import {
   Volume2,
   VolumeX,
   Award,
+  Hand,
 } from 'lucide-react';
 import {
   RoomData,
@@ -19,6 +20,7 @@ import {
   undoLastBidTransaction,
   reAuctionUnsoldTransaction,
   endAuctionTransaction,
+  toggleThinkingTimeTransaction,
 } from '../services/auctionService';
 import {
   calculateMaxBid,
@@ -33,6 +35,7 @@ import {
   playOutbidSound,
   speakAuctioneer,
 } from '../utils/audio';
+import { sound } from '../services/soundService';
 
 interface AuctionViewProps {
   room: RoomData;
@@ -58,6 +61,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
   const [bidding, setBidding] = useState(false);
   const [biddingError, setBiddingError] = useState('');
   const [hostActionLoading, setHostActionLoading] = useState(false);
+  const [thinkingLoading, setThinkingLoading] = useState(false);
 
   // Selected raise multiplier for owner (1, 2, or 4 steps)
   const [selectedMultiplier, setSelectedMultiplier] = useState<number>(1);
@@ -104,8 +108,12 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
       setTimeout(() => setIsScreenShaking(false), 400);
 
       if (soundEnabled) {
-        if (room.lastResult.type === 'SOLD') playGavelHit();
-        else playUnsoldChime();
+        if (room.lastResult.type === 'SOLD') {
+          playGavelHit();
+          sound.playGavelCrack();
+        } else {
+          playUnsoldChime();
+        }
       }
 
       if (voiceNarration && soundEnabled) {
@@ -136,7 +144,10 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
       ) {
         if (soundEnabled) playOutbidSound();
       } else {
-        if (soundEnabled && latest) playBidChime(latest.amount);
+        if (soundEnabled && latest) {
+          playBidChime(latest.amount);
+          sound.playBidBeep();
+        }
       }
     }
     prevBidCountRef.current = bids.length;
@@ -251,6 +262,27 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
     }
   };
 
+  // Owner signal: Request thinking time
+  const handleRequestThinkingTime = async () => {
+    const roomIdentifier = room?.code || (room as any)?.roomCode;
+    if (!roomIdentifier || !myClaimedTeam) return;
+    setThinkingLoading(true);
+    await toggleThinkingTimeTransaction(
+      roomIdentifier,
+      myClaimedTeam.id,
+      myClaimedTeam.name,
+      true
+    );
+    setThinkingLoading(false);
+  };
+
+  // Host dismiss thinking time alert
+  const handleDismissThinkingAlert = async () => {
+    const roomIdentifier = room?.code || (room as any)?.roomCode;
+    if (!roomIdentifier || !isHost) return;
+    await toggleThinkingTimeTransaction(roomIdentifier, '', '', false);
+  };
+
   // Host action: Sold
   const handleHostSold = async () => {
     const roomIdentifier = room?.code || (room as any)?.roomCode;
@@ -260,6 +292,8 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
       const res = await markSoldTransaction(roomIdentifier, hostToken);
       if (!res?.success) {
         setBiddingError(res?.error || 'Failed to mark sold');
+      } else {
+        await toggleThinkingTimeTransaction(roomIdentifier, '', '', false);
       }
     } catch (err: any) {
       setBiddingError(err?.message || 'Transaction failed');
@@ -277,6 +311,8 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
       const res = await markUnsoldTransaction(roomIdentifier, hostToken);
       if (!res?.success) {
         setBiddingError(res?.error || 'Failed to mark unsold');
+      } else {
+        await toggleThinkingTimeTransaction(roomIdentifier, '', '', false);
       }
     } catch (err: any) {
       setBiddingError(err?.message || 'Transaction failed');
@@ -354,7 +390,9 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
 
   // Round ended screen
   if (room?.status === 'round_ended') {
-    const unsoldPlayers = (room.allPlayers || []).filter((p) => p.status === 'unsold');
+    const unsoldPlayers = (room.allPlayers || room.playerPool || []).filter(
+      (p) => p.status === 'unsold'
+    );
     return (
       <div className="w-full max-w-[540px] mx-auto px-4 py-8 text-center space-y-6">
         <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-3xl p-6 shadow-sm">
@@ -404,17 +442,38 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
 
   const isBiddingWar = Boolean(
     lot &&
-    (lot.bidHistory?.length || 0) >= 2 &&
-    (lot.bidHistory?.[0]?.timestamp || 0) - (lot.bidHistory?.[1]?.timestamp || 0) < 4000 &&
-    lot.bidHistory?.[0]?.teamId !== lot.bidHistory?.[1]?.teamId
+      (lot.bidHistory?.length || 0) >= 2 &&
+      (lot.bidHistory?.[0]?.timestamp || 0) - (lot.bidHistory?.[1]?.timestamp || 0) < 4000 &&
+      lot.bidHistory?.[0]?.teamId !== lot.bidHistory?.[1]?.teamId
   );
 
+  const thinkingAlert = (room as any)?.thinkingAlert;
+
   return (
-    <div className={`w-full max-w-[540px] mx-auto px-4 py-3 space-y-3 ${isScreenShaking ? 'shake-action' : ''}`}>
+    <div className={`w-full max-w-[540px] mx-auto px-4 py-3 pb-16 space-y-3 ${isScreenShaking ? 'shake-action' : ''}`}>
       {!isHost && isHostOffline && (
         <div className="p-3 bg-red-600 text-white rounded-xl text-xs font-bold flex items-center justify-center space-x-2 shadow-md animate-pulse">
           <AlertTriangle className="w-4 h-4 flex-shrink-0" />
           <span>The host is offline. Waiting for host reconnection...</span>
+        </div>
+      )}
+
+      {/* LIVE THINKING TIME ALERT BANNER (VISIBLE TO ALL, DISMISSIBLE BY HOST) */}
+      {thinkingAlert && (
+        <div className="p-3 bg-amber-500 text-stone-950 rounded-2xl text-xs font-black uppercase tracking-wider flex items-center justify-between shadow-lg animate-pulse">
+          <div className="flex items-center space-x-2">
+            <Hand className="w-4 h-4 flex-shrink-0" />
+            <span>{thinkingAlert.teamName} needs thinking time! Hold the hammer.</span>
+          </div>
+          {isHost && (
+            <button
+              type="button"
+              onClick={handleDismissThinkingAlert}
+              className="px-2.5 py-1 bg-stone-950 text-white rounded-lg text-[10px] font-bold cursor-pointer hover:bg-stone-800"
+            >
+              Dismiss
+            </button>
+          )}
         </div>
       )}
 
@@ -508,7 +567,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
             </h2>
           </div>
 
-          {/* Player Style Attributes: Batting and Bowling badges */}
+          {/* Player Style Attributes */}
           <div className="flex flex-wrap items-center justify-center gap-1.5 mt-2 mb-3">
             {lot.player.cappedStatus && (
               <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[var(--color-surface-subtle)] border border-[var(--color-border)] text-[var(--color-text-dim)]">
@@ -516,7 +575,6 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
               </span>
             )}
 
-            {/* Batting Style (for BAT, WK, AR) */}
             {(lot.player.role === 'BAT' || lot.player.role === 'WK' || lot.player.role === 'AR') &&
               lot.player.battingStyle && (
                 <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-300">
@@ -524,7 +582,6 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
                 </span>
               )}
 
-            {/* Bowling Style (for BOWL, AR) */}
             {(lot.player.role === 'BOWL' || lot.player.role === 'AR') &&
               lot.player.bowlingStyle && (
                 <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-purple-50 dark:bg-purple-950/60 border border-purple-200 dark:border-purple-800 text-purple-700 dark:text-purple-300">
@@ -683,7 +740,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
                       }`}
                     >
                       <span className="text-[11px] font-display font-extrabold uppercase tracking-wide">
-                        +{mult} ({mult * step})
+                        +{mult} ({(mult * step).toFixed(1)})
                       </span>
                       <span className="text-xs font-mono font-bold">₹{targetAmount}</span>
                     </button>
@@ -716,6 +773,21 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
               <span className="text-sm font-semibold">{bidDisabledReason}</span>
             )}
           </button>
+
+          {/* OWNER THINKING TIME BUTTON */}
+          {myClaimedTeam && lot && (
+            <button
+              type="button"
+              disabled={thinkingLoading}
+              onClick={handleRequestThinkingTime}
+              className="w-full py-2.5 px-4 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-600 dark:text-amber-400 border border-amber-500/40 font-display text-xs font-black uppercase tracking-wider transition cursor-pointer flex items-center justify-center space-x-1.5 active:scale-95"
+            >
+              <Hand className="w-4 h-4" />
+              <span>
+                {thinkingLoading ? 'Signaling Host...' : 'Need Time to Think (Hold Hammer)'}
+              </span>
+            </button>
+          )}
         </div>
       )}
 
@@ -732,7 +804,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
             </span>
           </div>
 
-          {/* SQUAD REQUIREMENT FULFILLED BANNER: Appears ONLY when all teams have met minimum required players */}
+          {/* SQUAD REQUIREMENT FULFILLED BANNER */}
           {allTeamsMetMin && (
             <div className="p-3 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-400 dark:border-emerald-700 rounded-xl space-y-2">
               <div className="flex items-center space-x-2 text-emerald-800 dark:text-emerald-200">

@@ -1,9 +1,10 @@
 /**
  * Cricket Auction Night - Mobile-first real-time multiplayer cricket auction.
+ *
  * @license Apache-2.0
  */
-
 import React, { useState, useEffect } from 'react';
+import { BroadcastHUD } from './components/BroadcastHUD';
 import { Header } from './components/Header';
 import { HomeView } from './components/HomeView';
 import { HostSetupView } from './components/HostSetupView';
@@ -41,7 +42,7 @@ export default function App() {
   const [loading, setLoading] = useState<boolean>(false);
   const [connectionError, setConnectionError] = useState<string>('');
   const [authError, setAuthError] = useState<string>('');
-  const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
+  const [soundEnabled] = useState<boolean>(true);
   const [isFirebaseGuideOpen, setIsFirebaseGuideOpen] = useState<boolean>(false);
   const [isSummaryOpen, setIsSummaryOpen] = useState<boolean>(false);
 
@@ -224,9 +225,6 @@ export default function App() {
       setOwnerToken(myOwnerToken);
       await createAuctionRoom(code, settings, teams, selectedPlayers, token);
 
-      // Pass the generated 'token' directly so Firestore stores the host token correctly
-    
-
       localStorage.setItem(`cricket_host_token_${code}`, token);
       setHostToken(token);
       setIsHost(true);
@@ -259,12 +257,11 @@ export default function App() {
       <Header
         room={room}
         isHost={isHost}
-        soundEnabled={soundEnabled}
-        onToggleSound={() => setSoundEnabled(!soundEnabled)}
         onOpenSummary={room ? () => setIsSummaryOpen(true) : undefined}
       />
+      <BroadcastHUD room={room} />
 
-      <main className="flex-1 pb-10">
+      <main className="flex-1 pb-12">
         {loading && !room && (
           <div className="flex flex-col items-center justify-center py-20 space-y-3">
             <div className="w-10 h-10 border-4 border-[var(--color-primary)] border-t-transparent rounded-full animate-spin"></div>
