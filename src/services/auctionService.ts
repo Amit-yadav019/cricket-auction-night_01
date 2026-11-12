@@ -65,7 +65,6 @@ export function generateOwnerToken(): string {
   return `owner_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
 }
 
-// Strictly removes all undefined keys so Firestore never rejects writes
 function cleanData<T>(obj: T): T {
   return JSON.parse(JSON.stringify(obj));
 }
@@ -167,9 +166,7 @@ export async function sendHostHeartbeat(roomCode: string, _hostToken?: string): 
     await updateDoc(roomRef, {
       hostHeartbeat: Date.now(),
     });
-  } catch {
-    // Ignore
-  }
+  } catch {}
 }
 
 export async function claimTeamTransaction(
@@ -192,9 +189,7 @@ export async function claimTeamTransaction(
         (t) => t.id === teamId || t.name === teamId || t.shortName === teamId
       );
 
-      if (teamIdx === -1) {
-        throw new Error('Team not found');
-      }
+      if (teamIdx === -1) throw new Error('Team not found');
 
       normalized[teamIdx].claimedByOwnerName = ownerName;
       normalized[teamIdx].ownerToken = ownerToken;
@@ -270,11 +265,14 @@ export async function startBiddingTransaction(
         bidHistory: [],
       };
 
-      transaction.update(roomRef, cleanData({
-        status: 'active',
-        currentPlayerIndex: 0,
-        currentLot: initialLot,
-      }));
+      transaction.update(
+        roomRef,
+        cleanData({
+          status: 'active',
+          currentPlayerIndex: 0,
+          currentLot: initialLot,
+        })
+      );
 
       return { success: true };
     });
@@ -344,12 +342,15 @@ export async function placeBidTransaction(
 
       const updatedBidHistory = [bidRecord, ...(lot.bidHistory || [])].slice(0, 20);
 
-      transaction.update(roomRef, cleanData({
-        'currentLot.currentBid': Number(bidAmount.toFixed(2)),
-        'currentLot.leadingTeamId': biddingTeam.id,
-        'currentLot.leadingTeamName': biddingTeam.name,
-        'currentLot.bidHistory': updatedBidHistory,
-      }));
+      transaction.update(
+        roomRef,
+        cleanData({
+          'currentLot.currentBid': Number(bidAmount.toFixed(2)),
+          'currentLot.leadingTeamId': biddingTeam.id,
+          'currentLot.leadingTeamName': biddingTeam.name,
+          'currentLot.bidHistory': updatedBidHistory,
+        })
+      );
 
       return { success: true };
     });
@@ -411,21 +412,24 @@ export async function markSoldTransaction(
       const nextIndex = currentIndex + 1;
       const hasNext = nextIndex < updatedPool.length;
 
-      transaction.update(roomRef, cleanData({
-        teams: updatedTeams,
-        playerPool: updatedPool,
-        allPlayers: updatedAllPlayers,
-        currentPlayerIndex: nextIndex,
-        currentLot: hasNext ? { player: updatedPool[nextIndex], currentBid: null, bidHistory: [] } : null,
-        status: hasNext ? 'active' : 'round_ended',
-        lastResult: {
-          type: 'SOLD',
-          playerName: soldPlayer.name,
-          teamName: lot.leadingTeamName || 'Unknown Team',
-          amount: winningAmount,
-          timestamp: Date.now(),
-        },
-      }));
+      transaction.update(
+        roomRef,
+        cleanData({
+          teams: updatedTeams,
+          playerPool: updatedPool,
+          allPlayers: updatedAllPlayers,
+          currentPlayerIndex: nextIndex,
+          currentLot: hasNext ? { player: updatedPool[nextIndex], currentBid: null, bidHistory: [] } : null,
+          status: hasNext ? 'active' : 'round_ended',
+          lastResult: {
+            type: 'SOLD',
+            playerName: soldPlayer.name,
+            teamName: lot.leadingTeamName || 'Unknown Team',
+            amount: winningAmount,
+            timestamp: Date.now(),
+          },
+        })
+      );
 
       return { success: true };
     });
@@ -464,20 +468,23 @@ export async function markUnsoldTransaction(
       const nextIndex = currentIndex + 1;
       const hasNext = nextIndex < updatedPool.length;
 
-      transaction.update(roomRef, cleanData({
-        playerPool: updatedPool,
-        allPlayers: updatedAllPlayers,
-        currentPlayerIndex: nextIndex,
-        currentLot: hasNext ? { player: updatedPool[nextIndex], currentBid: null, bidHistory: [] } : null,
-        status: hasNext ? 'active' : 'round_ended',
-        lastResult: {
-          type: 'UNSOLD',
-          playerName: currentUnsoldPlayer.name,
-          teamName: '',
-          amount: 0,
-          timestamp: Date.now(),
-        },
-      }));
+      transaction.update(
+        roomRef,
+        cleanData({
+          playerPool: updatedPool,
+          allPlayers: updatedAllPlayers,
+          currentPlayerIndex: nextIndex,
+          currentLot: hasNext ? { player: updatedPool[nextIndex], currentBid: null, bidHistory: [] } : null,
+          status: hasNext ? 'active' : 'round_ended',
+          lastResult: {
+            type: 'UNSOLD',
+            playerName: currentUnsoldPlayer.name,
+            teamName: '',
+            amount: 0,
+            timestamp: Date.now(),
+          },
+        })
+      );
 
       return { success: true };
     });
@@ -507,12 +514,15 @@ export async function undoLastBidTransaction(
       const newHistory = lot.bidHistory.slice(1);
       const previousBid = newHistory.length > 0 ? newHistory[0] : null;
 
-      transaction.update(roomRef, cleanData({
-        'currentLot.currentBid': previousBid ? previousBid.amount : null,
-        'currentLot.leadingTeamId': previousBid ? previousBid.teamId : null,
-        'currentLot.leadingTeamName': previousBid ? previousBid.teamName : null,
-        'currentLot.bidHistory': newHistory,
-      }));
+      transaction.update(
+        roomRef,
+        cleanData({
+          'currentLot.currentBid': previousBid ? previousBid.amount : null,
+          'currentLot.leadingTeamId': previousBid ? previousBid.teamId : null,
+          'currentLot.leadingTeamName': previousBid ? previousBid.teamName : null,
+          'currentLot.bidHistory': newHistory,
+        })
+      );
 
       return { success: true };
     });
@@ -534,7 +544,6 @@ export async function reAuctionUnsoldTransaction(
 
     const room = snap.data() as any;
     const pool: Player[] = room.playerPool || room.allPlayers || [];
-
     const unsold = pool.filter((p: Player) => p.status === 'unsold');
 
     if (unsold.length === 0) {
@@ -548,18 +557,21 @@ export async function reAuctionUnsoldTransaction(
       soldToTeamId: undefined,
     }));
 
-    await updateDoc(roomRef, cleanData({
-      playerPool: resetUnsold,
-      currentPlayerIndex: 0,
-      round: (room.round || 1) + 1,
-      status: 'active',
-      currentLot: {
-        player: resetUnsold[0],
-        currentBid: null,
-        bidHistory: [],
-      },
-      lastResult: null,
-    }));
+    await updateDoc(
+      roomRef,
+      cleanData({
+        playerPool: resetUnsold,
+        currentPlayerIndex: 0,
+        round: (room.round || 1) + 1,
+        status: 'active',
+        currentLot: {
+          player: resetUnsold[0],
+          currentBid: null,
+          bidHistory: [],
+        },
+        lastResult: null,
+      })
+    );
 
     return { success: true };
   } catch (err: any) {
@@ -574,10 +586,13 @@ export async function endAuctionTransaction(
   const roomCode = resolveRoomCode(roomCodeInput);
   const roomRef = doc(db, 'rooms', roomCode);
   try {
-    await updateDoc(roomRef, cleanData({
-      status: 'completed',
-      currentLot: null,
-    }));
+    await updateDoc(
+      roomRef,
+      cleanData({
+        status: 'completed',
+        currentLot: null,
+      })
+    );
     return { success: true };
   } catch (err: any) {
     return { success: false, error: err?.message || 'Failed to end auction.' };
@@ -610,18 +625,21 @@ export async function resetAuctionTransaction(
       players: [],
     }));
 
-    await updateDoc(roomRef, cleanData({
-      status: 'lobby',
-      round: 1,
-      currentPlayerIndex: 0,
-      currentLot: null,
-      lastResult: null,
-      playerPool: all,
-      teams: resetTeams,
-      lineups: {},
-      masterScoutReport: null,
-      tournamentResult: null,
-    }));
+    await updateDoc(
+      roomRef,
+      cleanData({
+        status: 'lobby',
+        round: 1,
+        currentPlayerIndex: 0,
+        currentLot: null,
+        lastResult: null,
+        playerPool: all,
+        teams: resetTeams,
+        lineups: {},
+        masterScoutReport: null,
+        tournamentResult: null,
+      })
+    );
 
     return { success: true };
   } catch (err: any) {
@@ -633,19 +651,32 @@ export async function submitTeamLineupTransaction(
   roomCodeInput: string,
   teamId: string,
   playingIds: string[],
-  benchIds: string[]
+  benchIds: string[],
+  extraConfig?: {
+    impactPlayerId?: string;
+    captainId?: string;
+    viceCaptainId?: string;
+    contractTypes?: Record<string, '1yr' | '3yr'>;
+  }
 ): Promise<{ success: boolean; error?: string }> {
   const roomCode = resolveRoomCode(roomCodeInput);
   const roomRef = doc(db, 'rooms', roomCode);
 
   try {
-    await updateDoc(roomRef, cleanData({
-      [`lineups.${teamId}`]: {
-        playingIds,
-        benchIds,
-        updatedAt: Date.now(),
-      },
-    }));
+    await updateDoc(
+      roomRef,
+      cleanData({
+        [`lineups.${teamId}`]: {
+          playingIds,
+          benchIds,
+          impactPlayerId: extraConfig?.impactPlayerId || '',
+          captainId: extraConfig?.captainId || '',
+          viceCaptainId: extraConfig?.viceCaptainId || '',
+          contractTypes: extraConfig?.contractTypes || {},
+          updatedAt: Date.now(),
+        },
+      })
+    );
     return { success: true };
   } catch (err: any) {
     return { success: false, error: err?.message || 'Failed to submit lineup.' };
@@ -722,9 +753,12 @@ export async function proposeTradeTransaction(
       createdAt: Date.now(),
     };
 
-    await updateDoc(roomRef, cleanData({
-      [`trades.${tradeId}`]: tradeItem,
-    }));
+    await updateDoc(
+      roomRef,
+      cleanData({
+        [`trades.${tradeId}`]: tradeItem,
+      })
+    );
 
     return { success: true };
   } catch (err: any) {
@@ -911,19 +945,22 @@ export async function startAcceleratedRoundTransaction(
       }
 
       const [firstPlayer, ...restQueue] = acceleratedQueue;
-      tx.update(roomRef, cleanData({
-        status: 'active',
-        round: (room.round || 1) + 1,
-        isAccelerated: true,
-        queue: restQueue,
-        currentLot: {
-          player: firstPlayer,
-          currentBid: null,
-          leadingTeamId: null,
-          leadingTeamName: null,
-          bidHistory: [],
-        },
-      }));
+      tx.update(
+        roomRef,
+        cleanData({
+          status: 'active',
+          round: (room.round || 1) + 1,
+          isAccelerated: true,
+          queue: restQueue,
+          currentLot: {
+            player: firstPlayer,
+            currentBid: null,
+            leadingTeamId: null,
+            leadingTeamName: null,
+            bidHistory: [],
+          },
+        })
+      );
       return { success: true };
     });
   } catch (err: any) {

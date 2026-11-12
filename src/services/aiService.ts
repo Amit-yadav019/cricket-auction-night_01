@@ -5,8 +5,12 @@ export type PitchConditionTag =
   | 'spin'
   | 'flat'
   | 'bounce'
+  | 'swing'
+  | 'dew'
+  | 'slow_pitch'
   | 'large_ground'
-  | 'small_ground';
+  | 'small_ground'
+  | 'high_altitude';
 
 export interface TeamScoutRanking {
   teamId: string;
@@ -15,6 +19,17 @@ export interface TeamScoutRanking {
   verdict: string;
   benchPenaltyNote?: string;
   benchStrength: string;
+  benchPlayersList: string[];
+  benchReplacementVerdict: string;
+  squadCounters: {
+    eliteSpinners: number;
+    frontlineSpinners: number;
+    partTimeSpinners: number;
+    totalSpinners: number;
+    totalWicketkeepers: number;
+    middleOrderWks: number;
+    paceBowlers: number;
+  };
   projectedStats: {
     avgBattingScore: number;
     avgBattingWickets: number;
@@ -70,6 +85,7 @@ export interface TournamentSimulationResult {
 }
 
 export type BattingSlotRole = 'opener' | 'top_middle' | 'finisher' | 'tailender';
+export type SpinTier = 'none' | 'part_time' | 'frontline' | 'elite';
 
 export interface PlayerTacticalDNA {
   power: number;
@@ -82,6 +98,9 @@ export interface PlayerTacticalDNA {
   versatility: number;
   leadership: number;
   isGenuineBowler: boolean;
+  isGenuineSpinner: boolean;
+  spinTier: SpinTier;
+  isMiddleOrderWk: boolean;
   preferredSlot: BattingSlotRole;
   tag: string;
 }
@@ -95,144 +114,645 @@ export interface TeamLineupConfig {
   contractTypes?: Record<string, '1yr' | '3yr'>;
 }
 
+interface CalibratedProfile {
+  cat: 'PACE' | 'SPIN' | 'AR_PACE' | 'AR_SPIN' | 'WK_TOP' | 'WK_MID' | 'BAT';
+  bat?: number;
+  ball?: number;
+  slot?: BattingSlotRole;
+  deathBias?: boolean;
+}
+
+// MASTER 350-PLAYER POST-2010 IPL (2011–2026) CALIBRATED DATABASE
+const PLAYER_RATINGS_350: Record<string, CalibratedProfile> = {
+  // === 1. PACE BOWLERS (85) ===
+  'jasprit bumrah': { cat: 'PACE', ball: 99, deathBias: true },
+  'lasith malinga': { cat: 'PACE', ball: 98, deathBias: true },
+  'mitchell starc': { cat: 'PACE', ball: 97, deathBias: false },
+  'trent boult': { cat: 'PACE', ball: 97, deathBias: false },
+  'dale steyn': { cat: 'PACE', ball: 97, deathBias: false },
+  'jofra archer': { cat: 'PACE', ball: 96, deathBias: true },
+  'kagiso rabada': { cat: 'PACE', ball: 96, deathBias: true },
+  'josh hazlewood': { cat: 'PACE', ball: 95, deathBias: false },
+  'pat cummins': { cat: 'PACE', ball: 95, deathBias: false },
+  'mohammed shami': { cat: 'PACE', ball: 95, deathBias: false },
+  'bhuvneshwar kumar': { cat: 'PACE', ball: 94, deathBias: false },
+  'matheesha pathirana': { cat: 'PACE', ball: 94, deathBias: true },
+  'mark wood': { cat: 'PACE', ball: 94, deathBias: false },
+  'lockie ferguson': { cat: 'PACE', ball: 93, deathBias: true },
+  'arshdeep singh': { cat: 'PACE', ball: 93, deathBias: true },
+  'mohammed siraj': { cat: 'PACE', ball: 92, deathBias: false },
+  'dwayne bravo': { cat: 'PACE', ball: 92, deathBias: true },
+
+  'mayank yadav': { cat: 'PACE', ball: 88, deathBias: false },
+  'anrich nortje': { cat: 'PACE', ball: 87, deathBias: true },
+  'lungi ngidi': { cat: 'PACE', ball: 87, deathBias: true },
+  'matt henry': { cat: 'PACE', ball: 87, deathBias: false },
+  'harshal patel': { cat: 'PACE', ball: 86, deathBias: true },
+  't natarajan': { cat: 'PACE', ball: 86, deathBias: true },
+  'mustafizur rahman': { cat: 'PACE', ball: 85, deathBias: true },
+  'nathan ellis': { cat: 'PACE', ball: 85, deathBias: true },
+  'spencer johnson': { cat: 'PACE', ball: 85, deathBias: false },
+  'deepak chahar': { cat: 'PACE', ball: 84, deathBias: false },
+  'khaleel ahmed': { cat: 'PACE', ball: 84, deathBias: false },
+  'prasidh krishna': { cat: 'PACE', ball: 84, deathBias: false },
+  'reece topley': { cat: 'PACE', ball: 84, deathBias: false },
+  'daniel sams': { cat: 'PACE', ball: 84, deathBias: true },
+  'kyle jamieson': { cat: 'PACE', ball: 84, deathBias: false },
+  'avesh khan': { cat: 'PACE', ball: 83, deathBias: true },
+  'sandeep sharma': { cat: 'PACE', ball: 83, deathBias: false },
+  'morne morkel': { cat: 'PACE', ball: 83, deathBias: false },
+  'chris morris': { cat: 'PACE', ball: 83, deathBias: true },
+  'gerald coetzee': { cat: 'PACE', ball: 82, deathBias: true },
+  'mohit sharma': { cat: 'PACE', ball: 81, deathBias: true },
+  'mukesh kumar': { cat: 'PACE', ball: 81, deathBias: true },
+  'josh tongue': { cat: 'PACE', ball: 81, deathBias: false },
+  'nuwan thushara': { cat: 'PACE', ball: 81, deathBias: true },
+  'shardul thakur': { cat: 'PACE', ball: 80, deathBias: false },
+  'umesh yadav': { cat: 'PACE', ball: 80, deathBias: false },
+  'dushmantha chameera': { cat: 'PACE', ball: 80, deathBias: false },
+  'jhye richardson': { cat: 'PACE', ball: 80, deathBias: false },
+  'alzarri joseph': { cat: 'PACE', ball: 79, deathBias: false },
+  'riley meredith': { cat: 'PACE', ball: 79, deathBias: false },
+  'ishant sharma': { cat: 'PACE', ball: 78, deathBias: false },
+  'akash deep': { cat: 'PACE', ball: 78, deathBias: false },
+
+  'nandre burger': { cat: 'PACE', ball: 77, deathBias: false },
+  'eshan malinga': { cat: 'PACE', ball: 76, deathBias: true },
+  'harshit rana': { cat: 'PACE', ball: 76, deathBias: true },
+  'kwena maphaka': { cat: 'PACE', ball: 76, deathBias: false },
+  'xavier bartlett': { cat: 'PACE', ball: 76, deathBias: false },
+  'jacob duffy': { cat: 'PACE', ball: 76, deathBias: false },
+  'jaydev unadkat': { cat: 'PACE', ball: 76, deathBias: true },
+  'mohsin khan': { cat: 'PACE', ball: 75, deathBias: false },
+  'vyshak vijaykumar': { cat: 'PACE', ball: 75, deathBias: true },
+  'yash thakur': { cat: 'PACE', ball: 75, deathBias: true },
+  'prince yadav': { cat: 'PACE', ball: 75, deathBias: true },
+  'yash dayal': { cat: 'PACE', ball: 74, deathBias: false },
+  'akash singh': { cat: 'PACE', ball: 74, deathBias: false },
+  'gurjapneet singh': { cat: 'PACE', ball: 74, deathBias: false },
+  'vaibhav arora': { cat: 'PACE', ball: 73, deathBias: false },
+  'tushar deshpande': { cat: 'PACE', ball: 73, deathBias: true },
+  'sushant mishra': { cat: 'PACE', ball: 73, deathBias: false },
+  'auqib dar': { cat: 'PACE', ball: 73, deathBias: false },
+  'akash madhwal': { cat: 'PACE', ball: 72, deathBias: true },
+  'naman tiwari': { cat: 'PACE', ball: 72, deathBias: false },
+  'anshul kamboj': { cat: 'PACE', ball: 71, deathBias: false },
+  'rasikh salam': { cat: 'PACE', ball: 71, deathBias: true },
+  'arjun tendulkar': { cat: 'PACE', ball: 71, deathBias: false },
+  'gurnoor brar': { cat: 'PACE', ball: 71, deathBias: false },
+  'ashwani kumar': { cat: 'PACE', ball: 70, deathBias: true },
+  'umran malik': { cat: 'PACE', ball: 70, deathBias: false },
+  'abhinandan singh': { cat: 'PACE', ball: 70, deathBias: false },
+  'mangesh yadav': { cat: 'PACE', ball: 70, deathBias: false },
+  'praful hinge': { cat: 'PACE', ball: 70, deathBias: false },
+  'sakib hussain': { cat: 'PACE', ball: 70, deathBias: false },
+  'shivam mavi': { cat: 'PACE', ball: 69, deathBias: false },
+  'mukesh choudhary': { cat: 'PACE', ball: 69, deathBias: false },
+  'simarjeet singh': { cat: 'PACE', ball: 68, deathBias: false },
+  'chetan sakariya': { cat: 'PACE', ball: 68, deathBias: true },
+  'kartik tyagi': { cat: 'PACE', ball: 67, deathBias: true },
+  'brydon carse': { cat: 'PACE', ball: 67, deathBias: false },
+
+  // === 2. SPECIALIST SPINNERS (60) ===
+  'rashid khan': { cat: 'SPIN', ball: 99 },
+  'varun chakaravarthy': { cat: 'SPIN', ball: 97 },
+  'kuldeep yadav': { cat: 'SPIN', ball: 97 },
+  'yuzvendra chahal': { cat: 'SPIN', ball: 96 },
+  'ravichandran ashwin': { cat: 'SPIN', ball: 94 },
+  'ravi bishnoi': { cat: 'SPIN', ball: 94 },
+  'wanindu hasaranga': { cat: 'SPIN', ball: 94 },
+  'noor ahmad': { cat: 'SPIN', ball: 93 },
+  'mitchell santner': { cat: 'SPIN', ball: 93 },
+  'adam zampa': { cat: 'SPIN', ball: 93 },
+  'imran tahir': { cat: 'SPIN', ball: 93 },
+  'krunal pandya': { cat: 'SPIN', ball: 92 },
+  'harbhajan singh': { cat: 'SPIN', ball: 92 },
+  'maheesh theekshana': { cat: 'SPIN', ball: 92 },
+  'amit mishra': { cat: 'SPIN', ball: 92 },
+  'mujeeb ur rahman': { cat: 'SPIN', ball: 92 },
+  'keshav maharaj': { cat: 'SPIN', ball: 92 },
+  'adil rashid': { cat: 'SPIN', ball: 92 },
+  'akeal hosein': { cat: 'SPIN', ball: 92 },
+  'tabraiz shamsi': { cat: 'SPIN', ball: 92 },
+
+  'washington sundar': { cat: 'SPIN', ball: 83 },
+  'r sai kishore': { cat: 'SPIN', ball: 83 },
+  'sai kishore': { cat: 'SPIN', ball: 83 },
+  'rahul chahar': { cat: 'SPIN', ball: 82 },
+  'piyush chawla': { cat: 'SPIN', ball: 82 },
+  'harpreet brar': { cat: 'SPIN', ball: 81 },
+  'suyash sharma': { cat: 'SPIN', ball: 79 },
+  'digvesh rathi': { cat: 'SPIN', ball: 79 },
+  'mayank markande': { cat: 'SPIN', ball: 78 },
+  'shreyas gopal': { cat: 'SPIN', ball: 78 },
+  'vipraj nigam': { cat: 'SPIN', ball: 78 },
+  'rehan ahmed': { cat: 'SPIN', ball: 78 },
+  'karn sharma': { cat: 'SPIN', ball: 77 },
+  'allah ghazanfar': { cat: 'SPIN', ball: 77 },
+  'a m ghazanfar': { cat: 'SPIN', ball: 77 },
+  'murugan ashwin': { cat: 'SPIN', ball: 76 },
+  'jayant yadav': { cat: 'SPIN', ball: 76 },
+  'manav suthar': { cat: 'SPIN', ball: 76 },
+  'harsh dubey': { cat: 'SPIN', ball: 76 },
+  'raghu sharma': { cat: 'SPIN', ball: 76 },
+  'zeeshan ansari': { cat: 'SPIN', ball: 75 },
+  'kumar kartikeya': { cat: 'SPIN', ball: 75 },
+  'swapnil singh': { cat: 'SPIN', ball: 75 },
+  'm siddharth': { cat: 'SPIN', ball: 75 },
+  'krishnappa gowtham': { cat: 'SPIN', ball: 75 },
+  'pravin tambe': { cat: 'SPIN', ball: 75 },
+  'brad hogg': { cat: 'SPIN', ball: 75 },
+  'tanveer sangha': { cat: 'SPIN', ball: 75 },
+  'tripurana vijay': { cat: 'SPIN', ball: 75 },
+
+  'kc cariappa': { cat: 'SPIN', ball: 73 },
+  'pravin dubey': { cat: 'SPIN', ball: 73 },
+  'saurabh kumar': { cat: 'SPIN', ball: 73 },
+  'jagadeesha suchith': { cat: 'SPIN', ball: 73 },
+  'iqbal abdulla': { cat: 'SPIN', ball: 73 },
+  'izharulhaq naveed': { cat: 'SPIN', ball: 72 },
+  'jake lintott': { cat: 'SPIN', ball: 71 },
+  'tejas baroka': { cat: 'SPIN', ball: 70 },
+  'krains fuletra': { cat: 'SPIN', ball: 70 },
+  'shams mulani': { cat: 'SPIN', ball: 74 },
+  'tanush kotian': { cat: 'SPIN', ball: 74 },
+
+  // === 3. ALL-ROUNDERS (60 — DUAL BAT + BALL) ===
+  'sunil narine': { cat: 'AR_SPIN', bat: 90, ball: 99, slot: 'opener' },
+  'ravindra jadeja': { cat: 'AR_SPIN', bat: 82, ball: 95, slot: 'finisher' },
+  'axar patel': { cat: 'AR_SPIN', bat: 84, ball: 95, slot: 'finisher' },
+  'hardik pandya': { cat: 'AR_PACE', bat: 93, ball: 88, slot: 'finisher' },
+  'glenn maxwell': { cat: 'AR_SPIN', bat: 93, ball: 84, slot: 'top_middle' },
+  'glen maxwell': { cat: 'AR_SPIN', bat: 93, ball: 84, slot: 'top_middle' },
+  'andre russell': { cat: 'AR_PACE', bat: 93, ball: 81, slot: 'finisher' },
+  'cameron green': { cat: 'AR_PACE', bat: 90, ball: 81, slot: 'top_middle' },
+  'abhishek sharma': { cat: 'AR_SPIN', bat: 91, ball: 60, slot: 'opener' },
+
+  'shakib al hasan': { cat: 'AR_SPIN', bat: 84, ball: 87, slot: 'top_middle' },
+  'jason holder': { cat: 'AR_PACE', bat: 79, ball: 87, slot: 'finisher' },
+  'marco jansen': { cat: 'AR_PACE', bat: 75, ball: 86, slot: 'finisher' },
+  'sam curran': { cat: 'AR_PACE', bat: 82, ball: 84, slot: 'finisher' },
+  'chris woakes': { cat: 'AR_PACE', bat: 76, ball: 84, slot: 'finisher' },
+  'ben stokes': { cat: 'AR_PACE', bat: 86, ball: 83, slot: 'top_middle' },
+  'corbin bosch': { cat: 'AR_PACE', bat: 78, ball: 83, slot: 'finisher' },
+  'jamie overton': { cat: 'AR_PACE', bat: 80, ball: 82, slot: 'finisher' },
+  'marcus stoinis': { cat: 'AR_PACE', bat: 86, ball: 80, slot: 'top_middle' },
+  'azmatullah omarzai': { cat: 'AR_PACE', bat: 80, ball: 80, slot: 'finisher' },
+  'mitchell marsh': { cat: 'AR_PACE', bat: 87, ball: 79, slot: 'top_middle' },
+  'moeen ali': { cat: 'AR_SPIN', bat: 82, ball: 79, slot: 'top_middle' },
+  'romario shepherd': { cat: 'AR_PACE', bat: 81, ball: 78, slot: 'finisher' },
+  'colin de grandhomme': { cat: 'AR_PACE', bat: 81, ball: 78, slot: 'finisher' },
+  'jimmy neesham': { cat: 'AR_PACE', bat: 80, ball: 78, slot: 'finisher' },
+  'shahbaz ahmed': { cat: 'AR_SPIN', bat: 78, ball: 78, slot: 'finisher' },
+  'mohammad nabi': { cat: 'AR_SPIN', bat: 79, ball: 77, slot: 'finisher' },
+  'sikandar raza': { cat: 'AR_SPIN', bat: 81, ball: 77, slot: 'top_middle' },
+  'mitchell owen': { cat: 'AR_PACE', bat: 83, ball: 76, slot: 'opener' },
+  'jacob bethell': { cat: 'AR_SPIN', bat: 84, ball: 75, slot: 'top_middle' },
+  'matthew short': { cat: 'AR_SPIN', bat: 84, ball: 74, slot: 'opener' },
+  'prashant veer': { cat: 'AR_SPIN', bat: 75, ball: 75, slot: 'finisher' },
+
+  'liam livingstone': { cat: 'AR_SPIN', bat: 87, ball: 62, slot: 'finisher' },
+  'will jacks': { cat: 'AR_SPIN', bat: 86, ball: 61, slot: 'opener' },
+  'riyan parag': { cat: 'AR_SPIN', bat: 86, ball: 60, slot: 'top_middle' },
+  'shivam dube': { cat: 'AR_PACE', bat: 87, ball: 68, slot: 'top_middle' },
+  'venkatesh iyer': { cat: 'AR_PACE', bat: 84, ball: 68, slot: 'top_middle' },
+  'naman dhir': { cat: 'AR_SPIN', bat: 83, ball: 68, slot: 'top_middle' },
+  'nitish kumar reddy': { cat: 'AR_PACE', bat: 82, ball: 71, slot: 'top_middle' },
+  'rachin ravindra': { cat: 'AR_SPIN', bat: 83, ball: 59, slot: 'opener' },
+  'ramandeep singh': { cat: 'AR_PACE', bat: 78, ball: 69, slot: 'finisher' },
+  'arshad khan': { cat: 'AR_PACE', bat: 74, ball: 77, slot: 'finisher' },
+  'yudhvir singh charak': { cat: 'AR_PACE', bat: 70, ball: 76, slot: 'finisher' },
+  'zak foulkes': { cat: 'AR_PACE', bat: 72, ball: 76, slot: 'finisher' },
+  'rishi dhawan': { cat: 'AR_PACE', bat: 73, ball: 75, slot: 'finisher' },
+  'jack edwards': { cat: 'AR_PACE', bat: 75, ball: 75, slot: 'finisher' },
+  'anukul roy': { cat: 'AR_SPIN', bat: 73, ball: 75, slot: 'finisher' },
+  'suryansh shedge': { cat: 'AR_PACE', bat: 77, ball: 73, slot: 'finisher' },
+  'raj bawa': { cat: 'AR_PACE', bat: 74, ball: 74, slot: 'finisher' },
+  'nishant sindhu': { cat: 'AR_SPIN', bat: 75, ball: 74, slot: 'finisher' },
+  'ramakrishna ghosh': { cat: 'AR_PACE', bat: 72, ball: 74, slot: 'finisher' },
+  'dian forrester': { cat: 'AR_PACE', bat: 74, ball: 74, slot: 'finisher' },
+  'madhav tiwari': { cat: 'AR_PACE', bat: 72, ball: 74, slot: 'finisher' },
+  'lalit yadav': { cat: 'AR_SPIN', bat: 74, ball: 73, slot: 'finisher' },
+  'emanjot singh chahal': { cat: 'AR_SPIN', bat: 71, ball: 72, slot: 'finisher' },
+  'aman khan': { cat: 'AR_PACE', bat: 74, ball: 71, slot: 'finisher' },
+  'arshin kulkarni': { cat: 'AR_PACE', bat: 75, ball: 71, slot: 'opener' },
+  'sanvir singh': { cat: 'AR_PACE', bat: 73, ball: 71, slot: 'finisher' },
+  'vijay shankar': { cat: 'AR_PACE', bat: 77, ball: 70, slot: 'top_middle' },
+  'shivam singh': { cat: 'AR_SPIN', bat: 72, ball: 70, slot: 'finisher' },
+  'cooper connolly': { cat: 'AR_SPIN', bat: 76, ball: 54, slot: 'top_middle' },
+  'kamindu mendis': { cat: 'AR_SPIN', bat: 78, ball: 55, slot: 'top_middle' },
+
+  // === 4. WICKETKEEPERS (50 — TOP-ORDER & MIDDLE-ORDER) ===
+  'jos buttler': { cat: 'WK_TOP', bat: 98, slot: 'opener' },
+  'heinrich klaasen': { cat: 'WK_MID', bat: 98, slot: 'top_middle' },
+  'nicholas pooran': { cat: 'WK_MID', bat: 97, slot: 'top_middle' },
+  'kl rahul': { cat: 'WK_TOP', bat: 96, slot: 'opener' },
+  'sanju samson': { cat: 'WK_TOP', bat: 95, slot: 'opener' },
+  'rishabh pant': { cat: 'WK_MID', bat: 95, slot: 'top_middle' },
+  'phil salt': { cat: 'WK_TOP', bat: 94, slot: 'opener' },
+  'quinton de kock': { cat: 'WK_TOP', bat: 94, slot: 'opener' },
+  'ms dhoni': { cat: 'WK_MID', bat: 93, slot: 'finisher' },
+  'ishan kishan': { cat: 'WK_TOP', bat: 92, slot: 'opener' },
+  'jonny bairstow': { cat: 'WK_TOP', bat: 91, slot: 'opener' },
+
+  'jitesh sharma': { cat: 'WK_MID', bat: 88, slot: 'finisher' },
+  'josh inglis': { cat: 'WK_MID', bat: 88, slot: 'top_middle' },
+  'shai hope': { cat: 'WK_TOP', bat: 87, slot: 'opener' },
+  'devon conway': { cat: 'WK_TOP', bat: 86, slot: 'opener' },
+  'ben duckett': { cat: 'WK_TOP', bat: 85, slot: 'opener' },
+  'ryan rickelton': { cat: 'WK_TOP', bat: 84, slot: 'opener' },
+  'rahmanullah gurbaz': { cat: 'WK_TOP', bat: 84, slot: 'opener' },
+  'dhruv jurel': { cat: 'WK_MID', bat: 83, slot: 'finisher' },
+  'dinesh karthik': { cat: 'WK_MID', bat: 83, slot: 'finisher' },
+  'prabhsimran singh': { cat: 'WK_TOP', bat: 83, slot: 'opener' },
+  'tim seifert': { cat: 'WK_TOP', bat: 83, slot: 'opener' },
+  'tristan stubbs': { cat: 'WK_MID', bat: 82, slot: 'finisher' },
+  'robin uthappa': { cat: 'WK_TOP', bat: 82, slot: 'opener' },
+  'matthew breetzke': { cat: 'WK_TOP', bat: 82, slot: 'opener' },
+  'lhuan-dre pretorius': { cat: 'WK_TOP', bat: 82, slot: 'opener' },
+  'glenn phillips': { cat: 'WK_MID', bat: 81, slot: 'finisher' },
+  'wriddhiman saha': { cat: 'WK_TOP', bat: 80, slot: 'opener' },
+  'connor esterhuizen': { cat: 'WK_MID', bat: 80, slot: 'finisher' },
+  'tom banton': { cat: 'WK_TOP', bat: 80, slot: 'opener' },
+  'parthiv patel': { cat: 'WK_TOP', bat: 79, slot: 'opener' },
+
+  'sam billings': { cat: 'WK_MID', bat: 78, slot: 'finisher' },
+  'matthew wade': { cat: 'WK_TOP', bat: 78, slot: 'opener' },
+  'abishek porel': { cat: 'WK_MID', bat: 76, slot: 'top_middle' },
+  'robin minz': { cat: 'WK_TOP', bat: 74, slot: 'opener' },
+  'finn allen': { cat: 'WK_TOP', bat: 74, slot: 'opener' },
+  'donovan ferreira': { cat: 'WK_MID', bat: 74, slot: 'finisher' },
+  'tejasvi singh': { cat: 'WK_MID', bat: 74, slot: 'finisher' },
+  'urvil patel': { cat: 'WK_TOP', bat: 73, slot: 'opener' },
+  'salil arora': { cat: 'WK_MID', bat: 73, slot: 'finisher' },
+  'kumar kushagra': { cat: 'WK_MID', bat: 72, slot: 'finisher' },
+  'mukul choudhary': { cat: 'WK_MID', bat: 72, slot: 'finisher' },
+  'baba indrajith': { cat: 'WK_MID', bat: 72, slot: 'top_middle' },
+  'kartik sharma': { cat: 'WK_TOP', bat: 71, slot: 'opener' },
+  'anuj rawat': { cat: 'WK_MID', bat: 71, slot: 'finisher' },
+  'narayan jagadeesan': { cat: 'WK_TOP', bat: 70, slot: 'opener' },
+  'vishnu vinod': { cat: 'WK_MID', bat: 70, slot: 'finisher' },
+  'brijesh sharma': { cat: 'WK_MID', bat: 70, slot: 'finisher' },
+  'ks bharat': { cat: 'WK_MID', bat: 69, slot: 'top_middle' },
+  'sheldon jackson': { cat: 'WK_TOP', bat: 68, slot: 'opener' },
+
+  // === 5. SPECIALIST BATTERS (95) ===
+  'virat kohli': { cat: 'BAT', bat: 99, slot: 'opener' },
+  'ab de villiers': { cat: 'BAT', bat: 99, slot: 'top_middle' },
+  'suryakumar yadav': { cat: 'BAT', bat: 98, slot: 'top_middle' },
+  'david warner': { cat: 'BAT', bat: 98, slot: 'opener' },
+  'chris gayle': { cat: 'BAT', bat: 97, slot: 'opener' },
+  'shubman gill': { cat: 'BAT', bat: 95, slot: 'opener' },
+  'yashasvi jaiswal': { cat: 'BAT', bat: 95, slot: 'opener' },
+  'travis head': { cat: 'BAT', bat: 95, slot: 'opener' },
+  'faf du plessis': { cat: 'BAT', bat: 94, slot: 'opener' },
+  'shreyas iyer': { cat: 'BAT', bat: 94, slot: 'top_middle' },
+  'kane williamson': { cat: 'BAT', bat: 93, slot: 'top_middle' },
+  'david miller': { cat: 'BAT', bat: 92, slot: 'finisher' },
+  'kieron pollard': { cat: 'BAT', bat: 92, slot: 'finisher' },
+  'martin guptill': { cat: 'BAT', bat: 90, slot: 'opener' },
+
+  'ruturaj gaikwad': { cat: 'BAT', bat: 89, slot: 'opener' },
+  'sai sudharsan': { cat: 'BAT', bat: 89, slot: 'opener' },
+  'rajat patidar': { cat: 'BAT', bat: 89, slot: 'top_middle' },
+  'virender sehwag': { cat: 'BAT', bat: 89, slot: 'opener' },
+  'rinku singh': { cat: 'BAT', bat: 88, slot: 'finisher' },
+  'suresh raina': { cat: 'BAT', bat: 88, slot: 'top_middle' },
+  'gautam gambhir': { cat: 'BAT', bat: 88, slot: 'opener' },
+  'rohit sharma': { cat: 'BAT', bat: 87, slot: 'opener' },
+  'tilak varma': { cat: 'BAT', bat: 87, slot: 'top_middle' },
+  'shimron hetmyer': { cat: 'BAT', bat: 86, slot: 'finisher' },
+  'shikhar dhawan': { cat: 'BAT', bat: 86, slot: 'opener' },
+  'steve smith': { cat: 'BAT', bat: 86, slot: 'top_middle' },
+  'ambati rayudu': { cat: 'BAT', bat: 86, slot: 'top_middle' },
+  'brendan mccullum': { cat: 'BAT', bat: 86, slot: 'opener' },
+  'tim david': { cat: 'BAT', bat: 85, slot: 'finisher' },
+  'pathum nissanka': { cat: 'BAT', bat: 85, slot: 'opener' },
+  'rovman powell': { cat: 'BAT', bat: 84, slot: 'finisher' },
+  'jake fraser-mcgurk': { cat: 'BAT', bat: 84, slot: 'opener' },
+  'sherfane rutherford': { cat: 'BAT', bat: 84, slot: 'finisher' },
+  'harry brook': { cat: 'BAT', bat: 84, slot: 'top_middle' },
+  'devdutt padikkal': { cat: 'BAT', bat: 83, slot: 'opener' },
+  'nitish rana': { cat: 'BAT', bat: 83, slot: 'top_middle' },
+  'ajinkya rahane': { cat: 'BAT', bat: 83, slot: 'opener' },
+  'aiden markram': { cat: 'BAT', bat: 83, slot: 'top_middle' },
+  'eoin morgan': { cat: 'BAT', bat: 83, slot: 'finisher' },
+  'aaron finch': { cat: 'BAT', bat: 83, slot: 'opener' },
+  'rahul tripathi': { cat: 'BAT', bat: 82, slot: 'top_middle' },
+  'dewald brevis': { cat: 'BAT', bat: 82, slot: 'top_middle' },
+  'shahrukh khan': { cat: 'BAT', bat: 82, slot: 'finisher' },
+  'rahul tewatia': { cat: 'BAT', bat: 82, slot: 'finisher' },
+  'mayank agarwal': { cat: 'BAT', bat: 81, slot: 'opener' },
+  'manish pandey': { cat: 'BAT', bat: 81, slot: 'top_middle' },
+  'jason roy': { cat: 'BAT', bat: 81, slot: 'opener' },
+  'prithvi shaw': { cat: 'BAT', bat: 80, slot: 'opener' },
+
+  'nehal wadhera': { cat: 'BAT', bat: 78, slot: 'top_middle' },
+  'shashank singh': { cat: 'BAT', bat: 78, slot: 'finisher' },
+  'ashutosh sharma': { cat: 'BAT', bat: 78, slot: 'finisher' },
+  'angkrish raghuvanshi': { cat: 'BAT', bat: 77, slot: 'opener' },
+  'priyansh arya': { cat: 'BAT', bat: 77, slot: 'opener' },
+  'vaibhav sooryavanshi': { cat: 'BAT', bat: 76, slot: 'opener' },
+  'ayush badoni': { cat: 'BAT', bat: 76, slot: 'finisher' },
+  'mahipal lomror': { cat: 'BAT', bat: 76, slot: 'top_middle' },
+  'deepak hooda': { cat: 'BAT', bat: 76, slot: 'top_middle' },
+  'abhinav manohar': { cat: 'BAT', bat: 76, slot: 'finisher' },
+  'abdul samad': { cat: 'BAT', bat: 75, slot: 'finisher' },
+  'musheer khan': { cat: 'BAT', bat: 75, slot: 'top_middle' },
+  'atharva taide': { cat: 'BAT', bat: 75, slot: 'opener' },
+  'manan vohra': { cat: 'BAT', bat: 75, slot: 'opener' },
+  'mandeep singh': { cat: 'BAT', bat: 75, slot: 'top_middle' },
+  'saurabh tiwary': { cat: 'BAT', bat: 75, slot: 'top_middle' },
+  'ayush mhatre': { cat: 'BAT', bat: 74, slot: 'opener' },
+  'pyla avinash': { cat: 'BAT', bat: 74, slot: 'opener' },
+  'swastik chikara': { cat: 'BAT', bat: 74, slot: 'opener' },
+  'anmolpreet singh': { cat: 'BAT', bat: 74, slot: 'opener' },
+  'cheteshwar pujara': { cat: 'BAT', bat: 74, slot: 'top_middle' },
+  'hanuma vihari': { cat: 'BAT', bat: 74, slot: 'top_middle' },
+  'karun nair': { cat: 'BAT', bat: 74, slot: 'top_middle' },
+  'yusuf pathan': { cat: 'BAT', bat: 79, slot: 'finisher' },
+  'jp duminy': { cat: 'BAT', bat: 79, slot: 'top_middle' },
+  'kedar jadhav': { cat: 'BAT', bat: 75, slot: 'finisher' },
+  'sameer rizvi': { cat: 'BAT', bat: 73, slot: 'finisher' },
+  'aniket verma': { cat: 'BAT', bat: 73, slot: 'finisher' },
+  'harnoor pannu': { cat: 'BAT', bat: 73, slot: 'opener' },
+  'himmat singh': { cat: 'BAT', bat: 73, slot: 'top_middle' },
+  'akshat raghuwanshi': { cat: 'BAT', bat: 73, slot: 'top_middle' },
+  'danish malewar': { cat: 'BAT', bat: 73, slot: 'top_middle' },
+  'gurkeerat singh mann': { cat: 'BAT', bat: 73, slot: 'finisher' },
+  'ripal patel': { cat: 'BAT', bat: 73, slot: 'finisher' },
+  'priyam garg': { cat: 'BAT', bat: 73, slot: 'top_middle' },
+  'yash dhull': { cat: 'BAT', bat: 73, slot: 'opener' },
+  'shaik rasheed': { cat: 'BAT', bat: 73, slot: 'opener' },
+  'sarfaraz khan': { cat: 'BAT', bat: 72, slot: 'top_middle' },
+  'sahil parakh': { cat: 'BAT', bat: 72, slot: 'opener' },
+  'ravi singh': { cat: 'BAT', bat: 72, slot: 'top_middle' },
+  'sachin baby': { cat: 'BAT', bat: 72, slot: 'top_middle' },
+  'virat singh': { cat: 'BAT', bat: 72, slot: 'top_middle' },
+  'andre siddarth': { cat: 'BAT', bat: 72, slot: 'top_middle' },
+  'vansh bedi': { cat: 'BAT', bat: 72, slot: 'finisher' },
+  'smaran ravichandaran': { cat: 'BAT', bat: 71, slot: 'top_middle' },
+  'satvik deswal': { cat: 'BAT', bat: 71, slot: 'top_middle' },
+  'shubham dubey': { cat: 'BAT', bat: 70, slot: 'finisher' },
+};
+
+function getSpinTierFromRating(spinScore: number): SpinTier {
+  if (spinScore >= 90) return 'elite';
+  if (spinScore >= 74) return 'frontline';
+  if (spinScore >= 52) return 'part_time';
+  return 'none';
+}
+
 export function derivePlayerDNA(player: Player): PlayerTacticalDNA {
+  const nameLower = player.name.trim().toLowerCase();
+  const calibrated = PLAYER_RATINGS_350[nameLower];
   const isMarquee = (player.basePrice || 0.5) >= 2.0;
   const isPremium = (player.basePrice || 0.5) >= 1.5;
   const isMidTier = (player.basePrice || 0.5) >= 1.0;
   const isCapped = player.cappedStatus !== 'Uncapped';
-
   const tierBonus = isMarquee ? 18 : isPremium ? 13 : isMidTier ? 7 : isCapped ? 3 : 0;
-  const bowlStyle = (player.bowlingStyle || '').toLowerCase();
-  const batStyle = (player.battingStyle || '').toLowerCase();
-  const isLeftHandBat = batStyle.includes('left');
-  const nameSeed = player.name.split('').reduce((acc, ch) => acc + ch.charCodeAt(0), 0) % 6;
+  const nameSeed = player.name.split('').reduce((acc, ch) => acc + ch.charCodeAt(0), 0) % 5;
   const leadership = isMarquee ? 90 + (nameSeed % 5) : isPremium ? 82 + (nameSeed % 5) : 70 + (nameSeed % 5);
 
-  switch (player.role) {
-    case 'WK': {
-      const power = Math.min(99, 75 + tierBonus + nameSeed);
-      const stability = Math.min(96, 71 + Math.round(tierBonus * 0.9) + (isLeftHandBat ? 2 : 0));
-      const preferredSlot: BattingSlotRole =
-        power >= 91 && stability < 84 ? 'finisher' : stability >= 82 ? 'opener' : 'top_middle';
-      return {
-        power,
-        stability,
-        ppBowl: 0,
-        deathBowl: 0,
-        variations: 0,
-        spinControl: 0,
-        fielding: Math.min(97, 83 + Math.round(tierBonus * 0.6)),
-        versatility: Math.min(95, 73 + tierBonus),
-        leadership,
-        isGenuineBowler: false,
-        preferredSlot,
-        tag:
-          preferredSlot === 'opener'
-            ? 'Top-Order WK-Opener (Ideal #1–#3)'
-            : preferredSlot === 'finisher'
-            ? 'Explosive WK-Finisher (Ideal #5–#7)'
-            : 'Middle-Order WK-Batter (Ideal #3–#5)',
-      };
-    }
-
-    case 'BAT': {
-      const isPowerArchetype = nameSeed % 2 === 0;
-      const power = Math.min(99, 74 + tierBonus + (isPowerArchetype ? 5 : 0) + (isLeftHandBat ? 2 : 0));
-      const stability = Math.min(99, 75 + tierBonus + (!isPowerArchetype ? 6 : 0));
-      const preferredSlot: BattingSlotRole =
-        stability >= 85 ? 'opener' : power >= 90 && stability < 80 ? 'finisher' : 'top_middle';
-      return {
-        power,
-        stability,
-        ppBowl: 0,
-        deathBowl: 0,
-        variations: 0,
-        spinControl: 0,
-        fielding: Math.min(97, 79 + Math.round(tierBonus * 0.7) + (nameSeed % 4)),
-        versatility: Math.min(95, 72 + tierBonus),
-        leadership,
-        isGenuineBowler: false,
-        preferredSlot,
-        tag:
-          preferredSlot === 'opener'
-            ? 'Top-Order Anchor / Opener (Ideal #1–#3)'
-            : preferredSlot === 'finisher'
-            ? 'Death-Over Power Finisher (Ideal #5–#7)'
-            : 'Middle-Over Spin & Pace Enforcer (Ideal #3–#5)',
-      };
-    }
-
-    case 'AR': {
-      const isSpinnerAR =
-        bowlStyle.includes('spin') ||
-        bowlStyle.includes('orthodox') ||
-        bowlStyle.includes('offbreak') ||
-        bowlStyle.includes('legbreak');
-      const isFastAR = bowlStyle.includes('fast') || bowlStyle.includes('medium');
-
-      const power = Math.min(98, 76 + tierBonus + (nameSeed % 5));
-      const stability = Math.min(93, 71 + Math.round(tierBonus * 0.85));
-      const ppBowl = isFastAR ? 58 + tierBonus : isSpinnerAR ? 46 + Math.round(tierBonus * 0.7) : 48 + tierBonus;
-      const deathBowl = isFastAR ? 62 + tierBonus : isSpinnerAR ? 36 + Math.round(tierBonus * 0.6) : 45 + tierBonus;
-      const spinControl = isSpinnerAR ? 70 + tierBonus : 15;
-      const variations = Math.min(96, 62 + tierBonus + (isSpinnerAR ? 8 : 6));
+  if (calibrated) {
+    if (calibrated.cat === 'PACE') {
+      const rating = calibrated.ball ?? 78;
+      const isDeath = Boolean(calibrated.deathBias);
+      const ppBowl = isDeath ? Math.max(70, rating - 4) : rating;
+      const deathBowl = isDeath ? rating : Math.max(70, rating - 4);
+      const variations = Math.min(99, rating - (isDeath ? 0 : 3));
 
       return {
-        power,
-        stability,
-        ppBowl: Math.min(95, ppBowl),
-        deathBowl: Math.min(95, deathBowl),
-        variations,
-        spinControl: Math.min(96, spinControl),
-        fielding: Math.min(97, 81 + Math.round(tierBonus * 0.7)),
-        versatility: Math.min(99, 86 + Math.round(tierBonus * 0.7)),
-        leadership,
-        isGenuineBowler: true,
-        preferredSlot: 'finisher',
-        tag: isSpinnerAR
-          ? 'Spin All-Rounder & Floater (Ideal #5–#8)'
-          : 'Seam All-Rounder & Finisher (Ideal #5–#8)',
-      };
-    }
-
-    case 'BOWL': {
-      const isSpinner =
-        bowlStyle.includes('spin') ||
-        bowlStyle.includes('orthodox') ||
-        bowlStyle.includes('offbreak') ||
-        bowlStyle.includes('legbreak');
-      const isLeftArmPace = bowlStyle.includes('left-arm fast') || bowlStyle.includes('left-arm medium');
-
-      const isDeathSpecialist = !isSpinner && nameSeed % 2 === 1;
-      const ppBowl = isSpinner
-        ? 44 + Math.round(tierBonus * 0.8)
-        : Math.min(99, 76 + tierBonus + (!isDeathSpecialist ? 5 : 0) + (isLeftArmPace ? 3 : 0));
-      const deathBowl = isSpinner
-        ? 54 + Math.round(tierBonus * 0.8)
-        : Math.min(99, 73 + tierBonus + (isDeathSpecialist ? 7 : 0));
-      const spinControl = isSpinner ? Math.min(99, 79 + tierBonus + (nameSeed % 4)) : 0;
-      const variations = Math.min(99, 74 + tierBonus + (isDeathSpecialist || isSpinner ? 6 : 2));
-
-      return {
-        power: 22 + Math.round(tierBonus * 0.5),
-        stability: 20 + Math.round(tierBonus * 0.4),
+        power: 24 + (nameSeed % 6),
+        stability: 22 + (nameSeed % 5),
         ppBowl,
         deathBowl,
         variations,
-        spinControl,
-        fielding: Math.min(92, 71 + Math.round(tierBonus * 0.6)),
-        versatility: Math.min(94, 67 + tierBonus),
+        spinControl: 0,
+        fielding: Math.min(94, 72 + Math.round((rating - 65) * 0.5)),
+        versatility: Math.min(95, 70 + Math.round((rating - 65) * 0.5)),
         leadership,
         isGenuineBowler: true,
+        isGenuineSpinner: false,
+        spinTier: 'none',
+        isMiddleOrderWk: false,
         preferredSlot: 'tailender',
-        tag: isSpinner
-          ? 'Middle-Over Spin Controller (7-15 Overs · Tail #8–#11)'
-          : isDeathSpecialist
-          ? 'Death Specialist & Variations (16-20 Overs · Tail #8–#11)'
-          : 'Powerplay Swing Striker (1-4 Overs · Tail #8–#11)',
+        tag:
+          rating >= 92
+            ? isDeath
+              ? `Tier 1 Elite Death Pacer (${rating}/100 · Overs 16–20)`
+              : `Tier 1 Elite Strike Pacer (${rating}/100 · Overs 1–4)`
+            : rating >= 78
+            ? `Tier 2 Frontline Pacer (${rating}/100 · Tail #8–#11)`
+            : `Tier 3 Impact Pacer (${rating}/100 · Tail #8–#11)`,
+      };
+    }
+
+    if (calibrated.cat === 'SPIN') {
+      const rating = calibrated.ball ?? 78;
+      const spinTier = getSpinTierFromRating(rating);
+      return {
+        power: 24 + (nameSeed % 5),
+        stability: 22 + (nameSeed % 5),
+        ppBowl: rating >= 92 ? 72 : 48,
+        deathBowl: rating >= 92 ? 74 : 52,
+        variations: Math.min(99, rating),
+        spinControl: rating,
+        fielding: Math.min(94, 74 + Math.round((rating - 70) * 0.5)),
+        versatility: Math.min(95, 72 + Math.round((rating - 70) * 0.5)),
+        leadership,
+        isGenuineBowler: true,
+        isGenuineSpinner: true,
+        spinTier,
+        isMiddleOrderWk: false,
+        preferredSlot: 'tailender',
+        tag:
+          spinTier === 'elite'
+            ? `Tier 1 Elite Spinner (${rating}/100 · All Phases)`
+            : spinTier === 'frontline'
+            ? `Tier 2 Frontline Spinner (${rating}/100 · Overs 7–15)`
+            : `Tier 3 Utility Spinner (${rating}/100 · Tail #8–#11)`,
+      };
+    }
+
+    if (calibrated.cat === 'AR_SPIN') {
+      const batRating = calibrated.bat ?? 80;
+      const ballRating = calibrated.ball ?? 75;
+      const spinTier = getSpinTierFromRating(ballRating);
+      const slot = calibrated.slot ?? 'finisher';
+      return {
+        power: batRating,
+        stability: Math.max(70, batRating - 4),
+        ppBowl: ballRating >= 90 ? 70 : ballRating >= 75 ? 54 : 35,
+        deathBowl: ballRating >= 90 ? 66 : ballRating >= 75 ? 44 : 25,
+        variations: ballRating,
+        spinControl: ballRating,
+        fielding: Math.min(98, 84 + (nameSeed % 6)),
+        versatility: Math.min(99, Math.round((batRating + ballRating) / 2) + 4),
+        leadership,
+        isGenuineBowler: ballRating >= 74,
+        isGenuineSpinner: true,
+        spinTier,
+        isMiddleOrderWk: false,
+        preferredSlot: slot,
+        tag:
+          spinTier === 'elite'
+            ? `Elite Spin AR (Bat ${batRating} / Spin ${ballRating} · 4-Over Banker)`
+            : spinTier === 'frontline'
+            ? `Frontline Spin AR (Bat ${batRating} / Spin ${ballRating} · 2–4 Overs)`
+            : `Batter + Part-Time Spin (Bat ${batRating} / Spin ${ballRating} · 6th Bowler)`,
+      };
+    }
+
+    if (calibrated.cat === 'AR_PACE') {
+      const batRating = calibrated.bat ?? 80;
+      const ballRating = calibrated.ball ?? 75;
+      const slot = calibrated.slot ?? 'finisher';
+      return {
+        power: batRating,
+        stability: Math.max(68, batRating - 5),
+        ppBowl: Math.max(64, ballRating - 2),
+        deathBowl: ballRating,
+        variations: ballRating,
+        spinControl: 0,
+        fielding: Math.min(97, 83 + (nameSeed % 6)),
+        versatility: Math.min(99, Math.round((batRating + ballRating) / 2) + 4),
+        leadership,
+        isGenuineBowler: ballRating >= 74,
+        isGenuineSpinner: false,
+        spinTier: 'none',
+        isMiddleOrderWk: false,
+        preferredSlot: slot,
+        tag:
+          ballRating >= 78
+            ? `Frontline Seam AR (Bat ${batRating} / Pace ${ballRating} · 3–4 Overs)`
+            : `Power Seam AR (Bat ${batRating} / Med-Pace ${ballRating} · 6th Bowler)`,
+      };
+    }
+
+    if (calibrated.cat === 'WK_TOP' || calibrated.cat === 'WK_MID') {
+      const batRating = calibrated.bat ?? 84;
+      const isMiddle = calibrated.cat === 'WK_MID';
+      const slot = calibrated.slot ?? (isMiddle ? 'top_middle' : 'opener');
+      return {
+        power: batRating,
+        stability: isMiddle ? Math.max(72, batRating - 5) : batRating,
+        ppBowl: 0,
+        deathBowl: 0,
+        variations: 0,
+        spinControl: 0,
+        fielding: Math.min(98, 86 + (nameSeed % 6)),
+        versatility: Math.min(96, batRating - 2),
+        leadership,
+        isGenuineBowler: false,
+        isGenuineSpinner: false,
+        spinTier: 'none',
+        isMiddleOrderWk: isMiddle,
+        preferredSlot: slot,
+        tag: isMiddle
+          ? `Middle-Order WK (${batRating}/100 · Ideal #3–#6)`
+          : `Top-Order WK (${batRating}/100 · Ideal #1–#3)`,
+      };
+    }
+
+    if (calibrated.cat === 'BAT') {
+      const batRating = calibrated.bat ?? 82;
+      const slot = calibrated.slot ?? 'top_middle';
+      return {
+        power: slot === 'finisher' ? batRating : Math.max(72, batRating - 2),
+        stability: slot === 'opener' ? batRating : Math.max(70, batRating - 4),
+        ppBowl: 0,
+        deathBowl: 0,
+        variations: 0,
+        spinControl: 0,
+        fielding: Math.min(97, 82 + (nameSeed % 6)),
+        versatility: Math.min(95, batRating - 3),
+        leadership,
+        isGenuineBowler: false,
+        isGenuineSpinner: false,
+        spinTier: 'none',
+        isMiddleOrderWk: false,
+        preferredSlot: slot,
+        tag:
+          slot === 'opener'
+            ? `Top-Order Batter (${batRating}/100 · Ideal #1–#3)`
+            : slot === 'finisher'
+            ? `Death-Over Finisher (${batRating}/100 · Ideal #5–#7)`
+            : `Middle-Over Enforcer (${batRating}/100 · Ideal #3–#5)`,
       };
     }
   }
+
+  // Fallback for any custom user-added player not in the 350-player list
+  const bowlStyle = (player.bowlingStyle || '').toLowerCase();
+  const isSpinStyle =
+    bowlStyle.includes('spin') ||
+    bowlStyle.includes('orthodox') ||
+    bowlStyle.includes('offbreak') ||
+    bowlStyle.includes('legbreak');
+
+  if (player.role === 'BOWL') {
+    const baseRating = Math.min(90, 72 + tierBonus);
+    const spinTier: SpinTier = isSpinStyle ? 'frontline' : 'none';
+    return {
+      power: 24,
+      stability: 22,
+      ppBowl: isSpinStyle ? 48 : baseRating,
+      deathBowl: isSpinStyle ? 52 : baseRating,
+      variations: baseRating,
+      spinControl: isSpinStyle ? baseRating : 0,
+      fielding: 76,
+      versatility: 74,
+      leadership,
+      isGenuineBowler: true,
+      isGenuineSpinner: isSpinStyle,
+      spinTier,
+      isMiddleOrderWk: false,
+      preferredSlot: 'tailender',
+      tag: isSpinStyle ? `Frontline Spinner (${baseRating}/100)` : `Frontline Pacer (${baseRating}/100)`,
+    };
+  }
+
+  if (player.role === 'AR') {
+    const baseRating = Math.min(88, 74 + tierBonus);
+    const spinTier: SpinTier = isSpinStyle ? 'frontline' : 'none';
+    return {
+      power: baseRating,
+      stability: baseRating - 4,
+      ppBowl: isSpinStyle ? 50 : baseRating - 4,
+      deathBowl: isSpinStyle ? 44 : baseRating - 4,
+      variations: baseRating - 4,
+      spinControl: isSpinStyle ? baseRating - 2 : 0,
+      fielding: 82,
+      versatility: baseRating,
+      leadership,
+      isGenuineBowler: true,
+      isGenuineSpinner: isSpinStyle,
+      spinTier,
+      isMiddleOrderWk: false,
+      preferredSlot: 'finisher',
+      tag: isSpinStyle ? `Spin All-Rounder (${baseRating}/100)` : `Seam All-Rounder (${baseRating}/100)`,
+    };
+  }
+
+  const batRating = Math.min(90, 75 + tierBonus);
+  return {
+    power: batRating,
+    stability: batRating,
+    ppBowl: 0,
+    deathBowl: 0,
+    variations: 0,
+    spinControl: 0,
+    fielding: 82,
+    versatility: 78,
+    leadership,
+    isGenuineBowler: false,
+    isGenuineSpinner: false,
+    spinTier: 'none',
+    isMiddleOrderWk: false,
+    preferredSlot: player.role === 'WK' ? 'opener' : 'top_middle',
+    tag: player.role === 'WK' ? `Top-Order WK (${batRating}/100)` : `Top/Middle Batter (${batRating}/100)`,
+  };
 }
 
 export function evaluateBattingSlotFit(
@@ -248,7 +768,7 @@ export function evaluateBattingSlotFit(
       return {
         fitScore: -0.45,
         efficiencyMultiplier: 0.45,
-        note: `Batting Order Misalignment: Specialist bowler ${player.name} placed too high at #${slotIndex1Based}.`,
+        note: `Batting Order Misalignment: Specialist bowler ${player.name} is placed far too high at #${slotIndex1Based}, exposing the top/middle order to new-ball wickets.`,
       };
     }
     return { fitScore: 0.05, efficiencyMultiplier: 1.0 };
@@ -259,32 +779,32 @@ export function evaluateBattingSlotFit(
       return {
         fitScore: 0.16,
         efficiencyMultiplier: 1.18,
-        note: `Optimal Top-Order Slot: ${player.name} at #${slotIndex1Based} maximizes Powerplay & Orange Cap volume.`,
+        note: `Optimal Top-Order Deployment: ${player.name} at #${slotIndex1Based} (Stability ${dna.stability}/100) maximizes Powerplay fielding restrictions and high-volume Orange Cap scoring.`,
       };
     }
-    if (ratio > 0.65) {
+    if (ratio > 0.6) {
       return {
         fitScore: -0.25,
         efficiencyMultiplier: 0.68,
-        note: `Underutilized Top-Order Batter: ${player.name} buried too low at #${slotIndex1Based}.`,
+        note: `Underutilized Top-Order Batter: Natural opener ${player.name} (ideal #1–#3) is buried down at #${slotIndex1Based}, wasting their best Powerplay scoring window.`,
       };
     }
     return { fitScore: 0.06, efficiencyMultiplier: 0.96 };
   }
 
   if (dna.preferredSlot === 'top_middle') {
-    if (ratio >= 0.22 && ratio <= 0.58) {
+    if (ratio >= 0.22 && ratio <= 0.56) {
       return {
         fitScore: 0.16,
         efficiencyMultiplier: 1.12,
-        note: `Ideal Middle-Overs Anchor: ${player.name} at #${slotIndex1Based} controls spin & pace transitions.`,
+        note: `Ideal Middle-Overs Engine: ${player.name} at #${slotIndex1Based} (Power ${dna.power}/100) stabilizes collapses and dominates spin/pace transitions in overs 7–15.`,
       };
     }
-    if (ratio > 0.72) {
+    if (ratio > 0.6) {
       return {
-        fitScore: -0.2,
+        fitScore: -0.22,
         efficiencyMultiplier: 0.72,
-        note: `Late Entry Penalty: ${player.name} batting too late at #${slotIndex1Based}.`,
+        note: `Late Entry Penalty: ${player.name} (ideal #3–#5) is pushed down to #${slotIndex1Based}, leaving too few balls for a premier middle-order enforcer.`,
       };
     }
     return { fitScore: 0.05, efficiencyMultiplier: 0.95 };
@@ -294,14 +814,14 @@ export function evaluateBattingSlotFit(
     return {
       fitScore: 0.16,
       efficiencyMultiplier: 1.15,
-      note: `Prime Finishing Slot: ${player.name} at #${slotIndex1Based} maximizes death-over acceleration.`,
+      note: `Prime Death-Over Finishing Slot: ${player.name} at #${slotIndex1Based} (Power ${dna.power}/100) provides elite boundary acceleration in overs 16–20.`,
     };
   }
   if (ratio <= 0.2) {
     return {
       fitScore: -0.08,
       efficiencyMultiplier: 0.88,
-      note: `Pinch-Hitter Promotion: Finisher ${player.name} opening at #${slotIndex1Based} increases early wicket risk.`,
+      note: `Pinch-Hitter Risk: Lower-order finisher ${player.name} opening at #${slotIndex1Based} boosts early boundary upside but carries high early-wicket risk.`,
     };
   }
   return { fitScore: 0.05, efficiencyMultiplier: 0.95 };
@@ -314,10 +834,11 @@ export function computeEnvironmentModifiers(conditions: PitchConditionTag[]) {
   let paceBounceWeight = 1.0;
   let powerWeight = 1.0;
   let stabilityFieldingWeight = 1.0;
+  let deathWeight = 1.0;
 
   if (active.includes('spin')) {
-    runEnvShift -= 11;
-    spinWeight += 0.35;
+    runEnvShift -= 12;
+    spinWeight += 0.4;
   }
   if (active.includes('flat')) {
     runEnvShift += 16;
@@ -327,14 +848,32 @@ export function computeEnvironmentModifiers(conditions: PitchConditionTag[]) {
     runEnvShift -= 6;
     paceBounceWeight += 0.35;
   }
+  if (active.includes('swing')) {
+    runEnvShift -= 9;
+    paceBounceWeight += 0.38;
+  }
+  if (active.includes('dew')) {
+    runEnvShift += 13;
+    spinWeight -= 0.25;
+    deathWeight += 0.35;
+  }
+  if (active.includes('slow_pitch')) {
+    runEnvShift -= 10;
+    stabilityFieldingWeight += 0.3;
+    deathWeight += 0.25;
+  }
   if (active.includes('large_ground')) {
     runEnvShift -= 10;
-    spinWeight += 0.2;
+    spinWeight += 0.22;
     stabilityFieldingWeight += 0.28;
   }
   if (active.includes('small_ground')) {
     runEnvShift += 14;
     powerWeight += 0.28;
+  }
+  if (active.includes('high_altitude')) {
+    runEnvShift += 11;
+    powerWeight += 0.22;
   }
 
   return {
@@ -344,6 +883,7 @@ export function computeEnvironmentModifiers(conditions: PitchConditionTag[]) {
     paceBounceWeight,
     powerWeight,
     stabilityFieldingWeight,
+    deathWeight,
   };
 }
 
@@ -366,15 +906,14 @@ export function evaluateAiBotBid(
   const wkCount = roster.filter((p) => p.role === 'WK').length;
 
   let valuation = (player.basePrice || 0.5) * 2.2;
-  if (dna.power >= 88 || dna.deathBowl >= 85 || dna.spinControl >= 85) valuation += 2.5;
+  if (dna.spinTier === 'elite' || dna.power >= 92 || dna.deathBowl >= 92) valuation += 3.2;
   if (player.role === 'WK' && wkCount === 0) valuation += 3.0;
   if (roleCount === 0) valuation += 2.0;
   if (roster.length < minSquad) valuation += 1.2;
 
-  if (conditions.includes('spin') && dna.spinControl >= 75) valuation += 1.8;
-  if (conditions.includes('bounce') && dna.ppBowl >= 80) valuation += 1.8;
-  if ((conditions.includes('flat') || conditions.includes('small_ground')) && dna.power >= 88) valuation += 1.8;
-  if (conditions.includes('large_ground') && dna.stability >= 84) valuation += 1.5;
+  if (conditions.includes('spin') && dna.spinTier === 'elite') valuation += 2.2;
+  if ((conditions.includes('bounce') || conditions.includes('swing')) && dna.ppBowl >= 84) valuation += 1.8;
+  if ((conditions.includes('flat') || conditions.includes('small_ground')) && dna.power >= 90) valuation += 1.8;
 
   const slotsNeeded = Math.max(1, minSquad - roster.length);
   const budgetPerSlot = botTeam.purse / slotsNeeded;
@@ -448,8 +987,22 @@ export async function generateMasterScoutReport(
     const sortedPP = [...dnas].sort((a, b) => b.dna.ppBowl - a.dna.ppBowl);
     const ppOverRating = sortedPP.slice(0, topN).reduce((sum, d) => sum + d.dna.ppBowl, 0) / topN;
 
-    const sortedSpin = [...dnas].sort((a, b) => b.dna.spinControl - a.dna.spinControl);
-    const spinRating = sortedSpin.slice(0, 2).reduce((sum, d) => sum + d.dna.spinControl, 0) / 2;
+    // 3-TIER SPINNER SEPARATION
+    const eliteSpinners = dnas.filter((d) => d.dna.spinTier === 'elite');
+    const frontlineSpinners = dnas.filter((d) => d.dna.spinTier === 'frontline');
+    const partTimeSpinners = dnas.filter((d) => d.dna.spinTier === 'part_time');
+    const allXiSpinners = [...eliteSpinners, ...frontlineSpinners, ...partTimeSpinners];
+
+    const sortedSpin = [...allXiSpinners].sort((a, b) => b.dna.spinControl - a.dna.spinControl);
+    const spinRating =
+      sortedSpin.length > 0
+        ? sortedSpin.slice(0, 2).reduce((sum, d) => sum + d.dna.spinControl, 0) / Math.min(2, sortedSpin.length)
+        : 0;
+
+    // Role & Position Counters
+    const totalWks = dnas.filter((d) => d.player.role === 'WK').length;
+    const middleOrderWks = dnas.filter((d) => d.player.role === 'WK' && d.dna.isMiddleOrderWk).length;
+    const paceBowlers = dnas.filter((d) => d.dna.isGenuineBowler && !d.dna.isGenuineSpinner).length;
 
     const avgVariations =
       dnas.length > 0 ? dnas.reduce((sum, d) => sum + d.dna.variations, 0) / dnas.length : 50;
@@ -462,11 +1015,27 @@ export async function generateMasterScoutReport(
     const clampedOrderDelta = Math.max(-1.4, Math.min(0.85, rawOrderDelta));
     const battingOrderScore = Math.min(99, Math.max(40, Math.round(74 + clampedOrderDelta * 24)));
 
+    let spinTierAdjustment = 0;
+    if (eliteSpinners.length >= 2) spinTierAdjustment = 0.45;
+    else if (eliteSpinners.length === 1) spinTierAdjustment = 0.22;
+    else if (frontlineSpinners.length >= 1) spinTierAdjustment = 0.0;
+    else if (partTimeSpinners.length >= 1) spinTierAdjustment = -0.45;
+    else spinTierAdjustment = env.active.includes('spin') ? -1.45 : -0.9;
+
+    const middleWkBonus = middleOrderWks >= 1 ? 0.18 : 0;
+
     let multiConditionBonus = 0;
     if (env.active.includes('spin')) multiConditionBonus += ((spinRating - 65) / 100) * 0.45;
-    if (env.active.includes('bounce')) multiConditionBonus += ((ppOverRating - 65) / 100) * 0.45;
-    if (env.active.includes('flat')) multiConditionBonus += ((avgPower - 70) / 100) * 0.45;
+    if (env.active.includes('bounce') || env.active.includes('swing')) {
+      multiConditionBonus += ((ppOverRating - 65) / 100) * 0.45;
+    }
+    if (env.active.includes('flat') || env.active.includes('high_altitude')) {
+      multiConditionBonus += ((avgPower - 70) / 100) * 0.45;
+    }
     if (env.active.includes('small_ground')) multiConditionBonus += ((avgPower - 72) / 100) * 0.35;
+    if (env.active.includes('dew') || env.active.includes('slow_pitch')) {
+      multiConditionBonus += ((deathOverRating - 72) / 100) * 0.35;
+    }
     if (env.active.includes('large_ground')) {
       multiConditionBonus += (((avgStability + avgFielding + spinRating) / 3 - 68) / 100) * 0.45;
     }
@@ -482,13 +1051,60 @@ export async function generateMasterScoutReport(
     const dynastyBonus = Math.min(0.24, longTermCount * 0.04);
     const purseEfficiencyBonus = Math.min(0.22, (team.purse || 0) * 0.015);
 
-    const genuineBowlers = dnas.filter(
-      (d) =>
-        d.player.role === 'BOWL' ||
-        (d.player.role === 'AR' && (d.dna.ppBowl >= 50 || d.dna.deathBowl >= 50 || d.dna.spinControl >= 55))
-    );
+    const genuineBowlers = dnas.filter((d) => d.dna.isGenuineBowler);
     const hasExtraBowler = genuineBowlers.length >= sixthBowlerTarget;
-    const hasWK = orderedPlayingXI.some((p) => p.role === 'WK');
+    const hasWK = totalWks >= 1;
+
+    // Bench & Tournament Rotation Audit (Deep Match-to-Match Assessment)
+    const benchDnas = bench.map((b) => ({ player: b, dna: derivePlayerDNA(b) }));
+    const benchSpecialistSpinners = benchDnas.filter(
+      (b) => b.dna.spinTier === 'elite' || b.dna.spinTier === 'frontline'
+    );
+    const benchPacers = benchDnas.filter((b) => b.dna.isGenuineBowler && !b.dna.isGenuineSpinner);
+    const benchBatters = benchDnas.filter((b) => ['BAT', 'WK', 'AR'].includes(b.player.role));
+    const benchPlayersList = benchDnas.map(
+      (b) => `[${b.player.role}] ${b.player.name} — ${b.dna.tag}`
+    );
+
+    const hasFrontlineXiSpin = eliteSpinners.length + frontlineSpinners.length > 0;
+    const weakestXiPacer = [...dnas]
+      .filter((d) => d.dna.isGenuineBowler && !d.dna.isGenuineSpinner)
+      .sort((a, b) => a.dna.deathBowl - b.dna.deathBowl)[0];
+
+    let benchReplacementVerdict = '';
+    if (bench.length === 0) {
+      benchReplacementVerdict =
+        'CRITICAL TOURNAMENT RISK (0 Bench Reserves): You have zero players on the bench. Across a multi-venue league, any injury, form slump, or sudden shift to a turning pitch leaves you with no tactical substitution.';
+    } else if (!hasFrontlineXiSpin && benchSpecialistSpinners.length > 0) {
+      benchReplacementVerdict = `IMMEDIATE BENCH UPGRADE AVAILABLE: Your Starting XI lacks a specialist spinner, leaving overs 7–15 exposed. You can rotate ${benchSpecialistSpinners
+        .map((s) => `${s.player.name} (${s.dna.spinControl}/100 Spin)`)
+        .join(' or ')} from the bench${
+        weakestXiPacer ? ` in place of ${weakestXiPacer.player.name}` : ''
+      } on dry or gripping wickets.`;
+    } else if (!hasFrontlineXiSpin && benchSpecialistSpinners.length === 0) {
+      benchReplacementVerdict = `NO SPECIALIST SPIN BACKUP IN SQUAD: Neither your Starting XI nor your ${bench.length} bench reserve(s) (${bench
+        .map((b) => b.name)
+        .join(', ')}) includes a Tier 1 or Tier 2 spinner. Expect higher runs conceded during middle overs on slow/turning surfaces.`;
+    } else {
+      const assets: string[] = [];
+      if (benchSpecialistSpinners.length > 0)
+        assets.push(
+          `${benchSpecialistSpinners.length} Spinner (${benchSpecialistSpinners
+            .map((s) => `${s.player.name} ${s.dna.spinControl}`)
+            .join(', ')})`
+        );
+      if (benchPacers.length > 0)
+        assets.push(
+          `${benchPacers.length} Pacer (${benchPacers.map((p) => `${p.player.name} ${p.dna.deathBowl}`).join(', ')})`
+        );
+      if (benchBatters.length > 0)
+        assets.push(
+          `${benchBatters.length} Batter/WK (${benchBatters.map((b) => b.player.name).join(', ')})`
+        );
+      benchReplacementVerdict = `TOURNAMENT ROTATION READY (${bench.length} Reserves): Strong multi-pitch flexibility with ${assets.join(
+        ' · '
+      )} ready to rotate in based on venue conditions or injury cover.`;
+    }
 
     const battingStrengthFactor =
       (avgPower * env.powerWeight * 0.55 + avgStability * env.stabilityFieldingWeight * 0.45) / 100;
@@ -503,15 +1119,16 @@ export async function generateMasterScoutReport(
     );
 
     const bowlingControlFactor =
-      (deathOverRating * 0.36 +
+      (deathOverRating * env.deathWeight * 0.36 +
         ppOverRating * env.paceBounceWeight * 0.26 +
         spinRating * env.spinWeight * 0.24 +
         avgVariations * 0.14) /
       100;
     const bowlerShortagePenalty = genuineBowlers.length < minBowlers ? (minBowlers - genuineBowlers.length) * 14 : 0;
+    const spinDeficitRuns = eliteSpinners.length > 0 ? 0 : frontlineSpinners.length > 0 ? 5 : 13;
     const avgBowlingConceded = Math.max(
       122,
-      Math.min(235, Math.round(206 - bowlingControlFactor * 46 + env.runEnvShift + bowlerShortagePenalty))
+      Math.min(235, Math.round(206 - bowlingControlFactor * 46 + env.runEnvShift + bowlerShortagePenalty + spinDeficitRuns))
     );
     const avgBowlingWickets = Math.max(
       3,
@@ -530,6 +1147,8 @@ export async function generateMasterScoutReport(
         avgVersatility * 0.05) /
         10 +
       clampedOrderDelta +
+      spinTierAdjustment +
+      middleWkBonus +
       multiConditionBonus +
       leadershipBonus +
       impactBonus +
@@ -543,7 +1162,10 @@ export async function generateMasterScoutReport(
     let benchPenaltyNote: string | undefined;
     if (bench.length === 0) {
       rawScore -= 1.5;
-      benchPenaltyNote = 'Zero bench reserves (-1.50 pts): No injury backup beyond Starting Lineup.';
+      benchPenaltyNote = 'Zero bench reserves (-1.50 pts): No injury or pitch-rotation backup beyond Starting Lineup.';
+    } else if (!hasFrontlineXiSpin && benchSpecialistSpinners.length === 0) {
+      rawScore -= 0.35;
+      benchPenaltyNote = 'Incomplete Squad Depth (-0.35 pts): Zero frontline/elite spinners across both Starting XI and Bench.';
     } else {
       rawScore += Math.min(0.4, bench.length * 0.14);
     }
@@ -568,23 +1190,141 @@ export async function generateMasterScoutReport(
       return `${prefix} ${d.player.name} ${badges} — ${d.dna.tag}`.trim();
     });
 
+    // === DETAILED PROS (Phase-by-Phase Tactical Strengths) ===
+    const topOrderBatters = dnas.filter((d) => d.slotNum <= 3 && ['BAT', 'WK', 'AR'].includes(d.player.role));
+    if (topOrderBatters.length >= 2) {
+      const topPowerAvg = Math.round(
+        topOrderBatters.reduce((s, d) => s + d.dna.power, 0) / topOrderBatters.length
+      );
+      const topStabAvg = Math.round(
+        topOrderBatters.reduce((s, d) => s + d.dna.stability, 0) / topOrderBatters.length
+      );
+      if (topPowerAvg >= 84 || topStabAvg >= 84) {
+        pros.push(
+          `High-Output Top Order (Overs 1–6): ${topOrderBatters
+            .map((b) => `#${b.slotNum} ${b.player.name}`)
+            .join(', ')} combine ${topStabAvg}/100 stability with ${topPowerAvg}/100 boundary power to set strong Powerplay platforms.`
+        );
+      }
+    }
+
+    if (eliteSpinners.length > 0) {
+      pros.push(
+        `Tier 1 Elite Spin Attack (${eliteSpinners.length} World-Class): ${eliteSpinners
+          .map((s) => `${s.player.name} (${s.dna.spinControl}/100)`)
+          .join(' & ')} give you wicket-taking control and economy under 7.2 RPO during overs 7–15.`
+      );
+    } else if (frontlineSpinners.length > 0) {
+      pros.push(
+        `Tier 2 Frontline Spin Control (${frontlineSpinners.length}): ${frontlineSpinners
+          .map((s) => `${s.player.name} (${s.dna.spinControl}/100)`)
+          .join(', ')} provide reliable middle-over spin overs to prevent pace-only predictability.`
+      );
+    }
+
+    if (middleOrderWks >= 1) {
+      const midWkNames = dnas
+        .filter((d) => d.player.role === 'WK' && d.dna.isMiddleOrderWk)
+        .map((d) => `${d.player.name} (#${d.slotNum})`)
+        .join(', ');
+      pros.push(
+        `Middle-Order Keeper Advantage (${middleOrderWks} Middle WK): Having ${midWkNames} frees up top-order overseas/domestic slots while maintaining explosive hitting against spin and death pace.`
+      );
+    }
+
+    if (sortedDeath[0] && sortedDeath[0].dna.deathBowl >= 85) {
+      const topTwoDeath = sortedDeath
+        .slice(0, 2)
+        .map((d) => `${d.player.name} (${d.dna.deathBowl}/100)`)
+        .join(' & ');
+      pros.push(
+        `Death-Over Closing Arsenal (Overs 16–20): ${topTwoDeath} give you elite yorker, slower-ball, and hard-length execution when defending tight totals.`
+      );
+    }
+
+    if (hasExtraBowler) {
+      pros.push(
+        `6th-Bowler Tactical Cushion: ${genuineBowlers.length} credible bowling options for a ${playingCount}-player lineup let your captain match up against left/right batters without relying on weak part-timers.`
+      );
+    }
+
     dnas.forEach((d) => {
-      if (d.slotEval.fitScore >= 0.15 && d.slotEval.note && pros.length < 4) {
+      if (d.slotEval.fitScore >= 0.15 && d.slotEval.note && pros.length < 6) {
         pros.push(d.slotEval.note);
-      } else if (d.slotEval.fitScore < 0 && d.slotEval.note && cons.length < 4) {
+      }
+    });
+
+    if (bench.length >= 2) {
+      pros.push(
+        `Multi-Venue Bench Depth (${bench.length} Reserves): Having ${bench
+          .map((b) => b.name)
+          .join(', ')} on standby allows seamless tactical swaps across turning, bouncy, or dew-affected pitches.`
+      );
+    }
+
+    // === DETAILED CONS (Actionable Vulnerabilities & Point Deductions) ===
+    if (allXiSpinners.length === 0) {
+      cons.push(
+        `Zero Spinners in Starting XI (${spinTierAdjustment.toFixed(
+          2
+        )} pts penalty): A 100% pace/seam attack becomes predictable between overs 7–15, conceding an estimated +13 extra runs per match on dry or gripping surfaces.`
+      );
+    } else if (eliteSpinners.length === 0 && frontlineSpinners.length === 0 && partTimeSpinners.length > 0) {
+      cons.push(
+        `Part-Time Spin Reliance Only (${spinTierAdjustment.toFixed(
+          2
+        )} pts penalty): Relying solely on ${partTimeSpinners
+          .map((s) => `${s.player.name} (${s.dna.spinControl}/100)`)
+          .join(', ')} without a Tier 1 or Tier 2 specialist spinner exposes your middle overs against aggressive spin hitters.`
+      );
+    }
+
+    if (middleOrderWks === 0 && totalWks >= 1) {
+      cons.push(
+        `No Middle-Order Wicketkeeper (0 Middle WKs): All keeping options in your XI are natural top-order openers—forcing a top-order WK down the order reduces their boundary efficiency.`
+      );
+    }
+
+    if (deathOverRating < 80) {
+      cons.push(
+        `Death-Over Vulnerability (${Math.round(
+          deathOverRating
+        )}/100 Rating): Your bowling unit lacks a 90+ death specialist, increasing the risk of leaking 55+ runs in the final 4 overs on flat tracks or in heavy dew.`
+      );
+    }
+
+    dnas.forEach((d) => {
+      if (d.slotEval.fitScore < 0 && d.slotEval.note && cons.length < 6) {
         cons.push(d.slotEval.note);
       }
     });
 
-    if (impactPlayer) {
-      pros.push(`Tactical Impact Sub Armed: ${impactPlayer.name} (${impactPlayer.role}) provides live phase flexibility.`);
+    if (!hasExtraBowler) {
+      cons.push(
+        `No 6th Bowling Option: With only ${genuineBowlers.length} genuine bowlers in a ${playingCount}-player XI, a single bowler having an off-day leaves 4 unprotected overs to fill.`
+      );
     }
 
-    if (hasExtraBowler) {
-      pros.push(`Extra Bowling Option: ${genuineBowlers.length} credible bowlers for a ${playingCount}-player XI.`);
-    } else {
-      cons.push(`Tight Bowling Attack: Only ${genuineBowlers.length} genuine bowling options (target ${sixthBowlerTarget}+).`);
+    if (bench.length === 0) {
+      cons.push(
+        `Empty Bench Reserves (-1.50 pts penalty): Zero backup players drafted—any mid-tournament injury or unfavorable pitch condition leaves you with zero replacement options.`
+      );
+    } else if (!hasFrontlineXiSpin && benchSpecialistSpinners.length === 0) {
+      cons.push(
+        `Unbalanced Bench Reserves (-0.35 pts penalty): Your bench (${bench
+          .map((b) => b.name)
+          .join(', ')}) also lacks a Tier 1/2 spinner, meaning you cannot rotate a specialist spinner in for turning venues.`
+      );
     }
+
+    const spinLabel =
+      eliteSpinners.length > 0
+        ? `${Math.round(spinRating)}/100 · Tier 1 (${eliteSpinners.map((s) => `${s.player.name} ${s.dna.spinControl}`).join(', ')})`
+        : frontlineSpinners.length > 0
+        ? `${Math.round(spinRating)}/100 · Tier 2 (${frontlineSpinners.map((s) => `${s.player.name} ${s.dna.spinControl}`).join(', ')})`
+        : partTimeSpinners.length > 0
+        ? `${Math.round(spinRating)}/100 · Tier 3 Part-Time (${partTimeSpinners.map((s) => s.player.name).join(', ')})`
+        : '0/100 (⚠️ No Spinner in XI)';
 
     return {
       teamId: team.id,
@@ -594,8 +1334,8 @@ export async function generateMasterScoutReport(
         finalScore >= 8.5
           ? `Championship Favorite (${playingCount}-Player Format)`
           : finalScore >= 7.5
-          ? 'Playoff Contender — Strong Phase & Role Core'
-          : 'Dark Horse — Relies on Individual Match-Winners',
+          ? 'Playoff Contender — Strong Core with Minor Gaps'
+          : 'Tactical Rebuild Needed — Exploitable Phase Weaknesses',
       benchPenaltyNote,
       benchStrength:
         bench.length >= 3
@@ -603,6 +1343,17 @@ export async function generateMasterScoutReport(
           : bench.length >= 1
           ? `Active (${bench.length} Reserve${bench.length > 1 ? 's' : ''})`
           : 'Empty (0 Reserves)',
+      benchPlayersList,
+      benchReplacementVerdict,
+      squadCounters: {
+        eliteSpinners: eliteSpinners.length,
+        frontlineSpinners: frontlineSpinners.length,
+        partTimeSpinners: partTimeSpinners.length,
+        totalSpinners: allXiSpinners.length,
+        totalWicketkeepers: totalWks,
+        middleOrderWks,
+        paceBowlers,
+      },
       projectedStats: {
         avgBattingScore,
         avgBattingWickets,
@@ -612,9 +1363,9 @@ export async function generateMasterScoutReport(
       },
       playingBalance: {
         battingDepth: `Power ${Math.round(avgPower)}/100 · Stability ${Math.round(avgStability)}/100`,
-        deathBowling: `${Math.round(deathOverRating)}/100 (${sortedDeath[0]?.player.name || 'N/A'})`,
-        spinQuality: `${Math.round(spinRating)}/100 (${sortedSpin[0]?.player.name || 'N/A'})`,
-        powerplayImpact: `${Math.round(ppOverRating)}/100 (${sortedPP[0]?.player.name || 'N/A'})`,
+        deathBowling: `${Math.round(deathOverRating)}/100 (${sortedDeath[0]?.player.name || 'N/A'} ${sortedDeath[0]?.dna.deathBowl || ''})`,
+        spinQuality: spinLabel,
+        powerplayImpact: `${Math.round(ppOverRating)}/100 (${sortedPP[0]?.player.name || 'N/A'} ${sortedPP[0]?.dna.ppBowl || ''})`,
         battingOrderSynergy: `${battingOrderScore}/100 (${
           battingOrderScore >= 82 ? 'Optimal Sequence' : battingOrderScore >= 68 ? 'Balanced Sequence' : 'Suboptimal Order'
         })`,
@@ -651,7 +1402,7 @@ export async function generateMasterScoutReport(
             2
           )}/10 · Proj. ${leader.projectedStats.avgBattingScore} Scored / ${leader.projectedStats.avgBowlingConceded} Conceded) leads ${runnerUp.teamName} (${runnerUp.scoreOutOf10.toFixed(
             2
-          )}/10) with superior batting sequence and venue synergy.`
+          )}/10) through superior batting order alignment, spin-tier control, and tournament bench flexibility.`
         : 'Dynamic Squad & Venue Analysis complete.',
     activeConditions: env.active,
     rankings: rawRankings,
@@ -724,7 +1475,6 @@ export function simulateMiniTournament(
     };
   };
 
-  // 100% Deterministic Tactical Match Engine (Zero Math.random() — identical on every screen)
   const simulateMatch = (teamA: Team, teamB: Team, matchIndex: number) => {
     const sideA = getEffectiveSquad(teamA);
     const sideB = getEffectiveSquad(teamB);
@@ -741,6 +1491,8 @@ export function simulateMiniTournament(
 
       const realBowlers = bowlingSide.squad.filter((p) => p.role === 'BOWL' || p.role === 'AR');
       const bowlingAttack = realBowlers.slice(0, 5);
+      const hasEliteSpinner = bowlingAttack.some((b) => derivePlayerDNA(b).spinTier === 'elite');
+      const hasFrontlineSpinner = bowlingAttack.some((b) => derivePlayerDNA(b).spinTier === 'frontline');
 
       const oppBowlStrength =
         bowlingAttack.length > 0
@@ -750,7 +1502,8 @@ export function simulateMiniTournament(
             }, 0) / bowlingAttack.length
           : 60;
 
-      const oppPressureFactor = Math.max(0.84, Math.min(1.14, 1.42 - oppBowlStrength / 190));
+      const spinControlMult = hasEliteSpinner ? 0.96 : hasFrontlineSpinner ? 1.01 : 1.08;
+      const oppPressureFactor = Math.max(0.82, Math.min(1.18, (1.42 - oppBowlStrength / 190) * spinControlMult));
       const batterLimit = Math.min(battingSide.squad.length, Math.max(5, playingCount));
       const envRunMult = 1 + env.runEnvShift / 185;
 
@@ -852,11 +1605,11 @@ export function simulateMiniTournament(
             overs: 0,
             mvpPoints: 0,
             reason:
-              dna.deathBowl >= dna.ppBowl && dna.deathBowl >= dna.spinControl
-                ? `Death Specialist (16-20 Overs · Variations ${dna.variations}/100)`
-                : dna.ppBowl >= dna.spinControl
-                ? `Powerplay Swing Striker (1-4 Overs · PP ${dna.ppBowl}/100)`
-                : `Middle-Over Spin Controller (7-15 Overs · Spin ${dna.spinControl}/100)`,
+              dna.spinTier === 'elite'
+                ? `Tier 1 Elite Spinner (${dna.spinControl}/100 Control)`
+                : dna.deathBowl >= dna.ppBowl
+                ? `Death Specialist (16–20 Overs · Variations ${dna.variations}/100)`
+                : `Powerplay Swing Striker (1–4 Overs · PP ${dna.ppBowl}/100)`,
           };
         }
         playerTracker[bowler.id].wickets = Number((playerTracker[bowler.id].wickets + wkts).toFixed(2));

@@ -156,7 +156,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
       );
 
       for (const bot of aiTeams) {
-        if (evaluateAiBotBid(bot, lot.player, nextAmount, minSquad, maxSquad, pitchProfile)) {
+        if (evaluateAiBotBid(bot, lot.player, nextAmount, minSquad, maxSquad, [pitchProfile as any]))  {
           handlePlaceBid(bot.id, nextAmount, lot.currentBid === null ? 0 : 1);
           break;
         }

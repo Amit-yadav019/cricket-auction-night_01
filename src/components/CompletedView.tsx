@@ -64,10 +64,14 @@ interface CompletedViewProps {
 const PITCH_GROUND_OPTIONS: Array<{ id: PitchConditionTag; label: string; desc: string }> = [
   { id: 'balanced', label: '⚖️ Balanced Pitch & Ground', desc: 'Neutral' },
   { id: 'spin', label: '🌀 Spin Friendly', desc: 'Grip & Turn' },
-  { id: 'flat', label: '🚀 Flat Pitch', desc: 'True Bounce' },
-  { id: 'bounce', label: '⚡ Bounce & Seam', desc: 'Carry' },
+  { id: 'flat', label: '🚀 Flat Batting Road', desc: 'True Bounce' },
+  { id: 'bounce', label: '⚡ Bounce & Seam', desc: 'Steep Carry' },
+  { id: 'swing', label: '🌧️ Overcast Swing', desc: 'New Ball Move' },
+  { id: 'dew', label: '💧 Heavy Dew (Night)', desc: 'Wet Ball / York' },
+  { id: 'slow_pitch', label: '🐢 Slow & Two-Paced', desc: 'Cutters / Grip' },
   { id: 'large_ground', label: '🏟️ Large Ground', desc: 'Long Boundaries' },
   { id: 'small_ground', label: '💥 Small Ground', desc: 'Short Boundaries' },
+  { id: 'high_altitude', label: '🏔️ High Altitude', desc: 'Thin Air / Sixes' },
 ];
 
 export const CompletedView: React.FC<CompletedViewProps> = ({
@@ -223,7 +227,12 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
 
     setSubmittingLineup(true);
     setLineupSuccessMsg('');
-    const res = await submitTeamLineupTransaction(roomCode, myTeam.id, selectedPlayingIds, benchIds);
+    const res = await submitTeamLineupTransaction(roomCode, myTeam.id, selectedPlayingIds, benchIds, {
+      impactPlayerId,
+      captainId,
+      viceCaptainId,
+      contractTypes,
+    });
     setSubmittingLineup(false);
 
     if (res.success) {
@@ -958,7 +967,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
                 Tactical Power Rankings
               </h2>
               <p className="text-[11px] text-[var(--color-text-dim)] font-medium">
-                {targetPlayingCount}-Player Format · Avg. Batting & Bowling Projections
+                {targetPlayingCount}-Player Format · 350-Player Granular Scout & Bench Audit
               </p>
             </div>
           </div>
@@ -1115,6 +1124,47 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
                           </div>
                         )}
 
+                        {/* SQUAD ROLE COUNTERS: SPINNERS TIER + MIDDLE-ORDER WKS + PACERS + BENCH */}
+                        {rep.squadCounters && (
+                          <div className="grid grid-cols-4 gap-1.5 text-center font-mono text-[10px]">
+                            <div className="p-2 rounded-xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)]">
+                              <span className="text-[8px] font-sans font-bold uppercase text-[var(--color-text-dim)] block">
+                                Spinners
+                              </span>
+                              <span className="font-black text-[var(--color-text-main)]">
+                                {rep.squadCounters.totalSpinners} ({rep.squadCounters.eliteSpinners}E/{rep.squadCounters.frontlineSpinners}F/{rep.squadCounters.partTimeSpinners}P)
+                              </span>
+                            </div>
+
+                            <div className="p-2 rounded-xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)]">
+                              <span className="text-[8px] font-sans font-bold uppercase text-[var(--color-text-dim)] block">
+                                Middle WKs
+                              </span>
+                              <span className={`font-black ${rep.squadCounters.middleOrderWks >= 1 ? 'text-emerald-500' : 'text-amber-500'}`}>
+                                {rep.squadCounters.middleOrderWks} / {rep.squadCounters.totalWicketkeepers} Total
+                              </span>
+                            </div>
+
+                            <div className="p-2 rounded-xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)]">
+                              <span className="text-[8px] font-sans font-bold uppercase text-[var(--color-text-dim)] block">
+                                Pacers
+                              </span>
+                              <span className="font-black text-[var(--color-text-main)]">
+                                {rep.squadCounters.paceBowlers}
+                              </span>
+                            </div>
+
+                            <div className="p-2 rounded-xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)]">
+                              <span className="text-[8px] font-sans font-bold uppercase text-[var(--color-text-dim)] block">
+                                Bench Size
+                              </span>
+                              <span className="font-black text-amber-500">
+                                {rep.benchPlayersList?.length || 0}
+                              </span>
+                            </div>
+                          </div>
+                        )}
+
                         <div className="grid grid-cols-2 gap-2 text-[11px]">
                           <div className="p-2.5 rounded-xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)]">
                             <span className="text-[9px] text-[var(--color-text-dim)] uppercase font-bold block">Batting Order Fit</span>
@@ -1152,10 +1202,39 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
                           </div>
                         )}
 
+                        {/* BENCH DEPTH & TOURNAMENT REPLACEMENT OPTIONS */}
+                        {rep.benchReplacementVerdict && (
+                          <div className="p-3 rounded-2xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)] space-y-2">
+                            <span className="text-[10px] font-black uppercase text-amber-500 flex items-center space-x-1">
+                              <Layers className="w-3.5 h-3.5" />
+                              <span>Bench Reserves & Tournament Rotation ({rep.benchStrength})</span>
+                            </span>
+
+                            <p className="text-[11px] text-[var(--color-text-main)] leading-relaxed font-medium">
+                              {rep.benchReplacementVerdict}
+                            </p>
+
+                            {rep.benchPlayersList?.length > 0 && (
+                              <div className="flex flex-wrap gap-1.5 pt-1">
+                                {rep.benchPlayersList.map((bItem, i) => (
+                                  <span
+                                    key={i}
+                                    className="text-[10px] px-2 py-0.5 rounded-lg bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-text-muted)]"
+                                  >
+                                    {bItem}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+
                         {rep.pros?.length > 0 && (
-                          <div className="space-y-1">
-                            <span className="text-[10px] font-black uppercase text-emerald-500 block">Prime Strengths:</span>
-                            <ul className="list-disc list-inside space-y-0.5 text-[11px] text-[var(--color-text-muted)]">
+                          <div className="space-y-1.5">
+                            <span className="text-[10px] font-black uppercase text-emerald-500 block">
+                              Prime Strengths (Detailed Breakdown):
+                            </span>
+                            <ul className="list-disc list-inside space-y-1 text-[11px] text-[var(--color-text-muted)] leading-relaxed">
                               {rep.pros.map((pro, i) => (
                                 <li key={i}>{pro}</li>
                               ))}
@@ -1164,9 +1243,11 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
                         )}
 
                         {rep.cons?.length > 0 && (
-                          <div className="space-y-1">
-                            <span className="text-[10px] font-black uppercase text-rose-500 block">Tactical Vulnerabilities:</span>
-                            <ul className="list-disc list-inside space-y-0.5 text-[11px] text-[var(--color-text-muted)]">
+                          <div className="space-y-1.5">
+                            <span className="text-[10px] font-black uppercase text-rose-500 block">
+                              Tactical Vulnerabilities & Point Deductions:
+                            </span>
+                            <ul className="list-disc list-inside space-y-1 text-[11px] text-[var(--color-text-muted)] leading-relaxed">
                               {rep.cons.map((con, i) => (
                                 <li key={i}>{con}</li>
                               ))}
