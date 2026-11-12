@@ -307,12 +307,9 @@ export function evaluateBattingSlotFit(
   return { fitScore: 0.05, efficiencyMultiplier: 0.95 };
 }
 
-/**
- * Computes combined environmental multipliers from any multi-selected pitch & ground conditions.
- */
 export function computeEnvironmentModifiers(conditions: PitchConditionTag[]) {
   const active = conditions.length > 0 ? conditions : (['balanced'] as PitchConditionTag[]);
-  let runEnvShift = 0; // +/- runs per innings
+  let runEnvShift = 0;
   let spinWeight = 1.0;
   let paceBounceWeight = 1.0;
   let powerWeight = 1.0;
@@ -461,19 +458,17 @@ export async function generateMasterScoutReport(
     const avgVersatility =
       dnas.length > 0 ? dnas.reduce((sum, d) => sum + d.dna.versatility, 0) / dnas.length : 70;
 
-    // Batting Order Synergy Delta
     const rawOrderDelta = dnas.reduce((sum, d) => sum + d.slotEval.fitScore, 0);
     const clampedOrderDelta = Math.max(-1.4, Math.min(0.85, rawOrderDelta));
     const battingOrderScore = Math.min(99, Math.max(40, Math.round(74 + clampedOrderDelta * 24)));
 
-    // Multi-Condition Pitch & Ground Synergy Bonus
     let multiConditionBonus = 0;
     if (env.active.includes('spin')) multiConditionBonus += ((spinRating - 65) / 100) * 0.45;
     if (env.active.includes('bounce')) multiConditionBonus += ((ppOverRating - 65) / 100) * 0.45;
     if (env.active.includes('flat')) multiConditionBonus += ((avgPower - 70) / 100) * 0.45;
     if (env.active.includes('small_ground')) multiConditionBonus += ((avgPower - 72) / 100) * 0.35;
     if (env.active.includes('large_ground')) {
-      multiConditionBonus += ((avgStability + avgFielding + spinRating) / 3 - 68) / 100 * 0.45;
+      multiConditionBonus += (((avgStability + avgFielding + spinRating) / 3 - 68) / 100) * 0.45;
     }
 
     const captainEntry = dnas.find((d) => d.isCaptain);
@@ -495,7 +490,6 @@ export async function generateMasterScoutReport(
     const hasExtraBowler = genuineBowlers.length >= sixthBowlerTarget;
     const hasWK = orderedPlayingXI.some((p) => p.role === 'WK');
 
-    // Calculate Projected 20-Over Avg. Batting Score & Avg. Bowling Runs Conceded under selected Pitch/Ground conditions
     const battingStrengthFactor =
       (avgPower * env.powerWeight * 0.55 + avgStability * env.stabilityFieldingWeight * 0.45) / 100;
     const orderRunsShift = clampedOrderDelta * 11;
@@ -730,7 +724,8 @@ export function simulateMiniTournament(
     };
   };
 
-  const simulateMatch = (teamA: Team, teamB: Team) => {
+  // 100% Deterministic Tactical Match Engine (Zero Math.random() — identical on every screen)
+  const simulateMatch = (teamA: Team, teamB: Team, matchIndex: number) => {
     const sideA = getEffectiveSquad(teamA);
     const sideB = getEffectiveSquad(teamB);
 
@@ -738,15 +733,25 @@ export function simulateMiniTournament(
       battingSide: { squad: Player[]; captainId?: string; vcId?: string },
       battingTeamName: string,
       bowlingSide: { squad: Player[] },
-      bowlingTeamName: string
+      bowlingTeamName: string,
+      inningsSeed: number
     ) => {
       let totalRuns = 0;
       let totalWickets = 0;
 
       const realBowlers = bowlingSide.squad.filter((p) => p.role === 'BOWL' || p.role === 'AR');
       const bowlingAttack = realBowlers.slice(0, 5);
-      const batterLimit = Math.min(battingSide.squad.length, Math.max(5, playingCount));
 
+      const oppBowlStrength =
+        bowlingAttack.length > 0
+          ? bowlingAttack.reduce((s, b) => {
+              const d = derivePlayerDNA(b);
+              return s + (d.deathBowl * 0.4 + d.ppBowl * 0.3 + d.spinControl * 0.3);
+            }, 0) / bowlingAttack.length
+          : 60;
+
+      const oppPressureFactor = Math.max(0.84, Math.min(1.14, 1.42 - oppBowlStrength / 190));
+      const batterLimit = Math.min(battingSide.squad.length, Math.max(5, playingCount));
       const envRunMult = 1 + env.runEnvShift / 185;
 
       battingSide.squad.slice(0, batterLimit).forEach((batter, idx) => {
@@ -760,31 +765,32 @@ export function simulateMiniTournament(
         const capMult = batter.id === battingSide.captainId ? 1.12 : batter.id === battingSide.vcId ? 1.06 : 1.0;
 
         const positionVolume =
-          slotNum <= 2 ? 1.22 : slotNum <= 4 ? 1.02 : slotNum <= 6 ? 0.78 : 0.42;
+          slotNum <= 2 ? 1.24 : slotNum <= 4 ? 1.04 : slotNum <= 6 ? 0.78 : 0.4;
 
-        const consistencyFloor = 0.55 + stabilityFactor * 0.45;
-        const formRoll = consistencyFloor + Math.random() * (0.45 + powerFactor * 0.35);
+        const deterministicWave =
+          0.88 + (((batter.name.charCodeAt(0) + matchIndex * 7 + inningsSeed * 3) % 11) / 40);
 
         const rawRuns =
-          (stabilityFactor * 22 + powerFactor * 16) *
+          (stabilityFactor * 23 + powerFactor * 16) *
           positionVolume *
           slotFit.efficiencyMultiplier *
-          formRoll *
+          deterministicWave *
           capMult *
-          envRunMult;
-        const runs = Math.max(1, Math.round(rawRuns));
+          envRunMult *
+          oppPressureFactor;
+
+        const runs = Math.max(2, Math.round(rawRuns));
 
         const slotSrBoost = slotNum >= Math.ceil(playingCount * 0.45) && dna.preferredSlot === 'finisher' ? 1.08 : 1.0;
         const effectiveSr =
-          (105 + powerFactor * 72) *
+          (108 + powerFactor * 72) *
           slotSrBoost *
           slotFit.efficiencyMultiplier *
-          (0.9 + Math.random() * 0.22) *
           envRunMult;
-        const balls = Math.max(3, Math.round((runs / Math.max(85, effectiveSr)) * 100));
+        const balls = Math.max(3, Math.round((runs / Math.max(90, effectiveSr)) * 100));
 
         totalRuns += runs;
-        if (Math.random() > stabilityFactor * 0.36) {
+        if (stabilityFactor < 0.84 || slotNum > 3) {
           totalWickets++;
         }
 
@@ -807,34 +813,32 @@ export function simulateMiniTournament(
         playerTracker[batter.id].mvpPoints += runs + (effectiveSr >= 155 ? 6 : 0);
       });
 
-      let availableWickets = Math.min(playingCount - 1, Math.max(3, totalWickets));
+      const cappedWickets = Math.min(playingCount - 1, Math.max(4, totalWickets));
+      const totalThreat = bowlingAttack.reduce((sum, b) => {
+        const d = derivePlayerDNA(b);
+        return sum + (d.deathBowl * 0.38 + d.ppBowl * 0.32 * env.paceBounceWeight + d.variations * 0.2 + d.spinControl * 0.1 * env.spinWeight);
+      }, 0);
+
       bowlingAttack.forEach((bowler) => {
         const dna = derivePlayerDNA(bowler);
         if (!dna.isGenuineBowler) return;
 
-        const wicketThreatScore =
+        const threat =
           dna.deathBowl * 0.38 +
           dna.ppBowl * 0.32 * env.paceBounceWeight +
           dna.variations * 0.2 +
           dna.spinControl * 0.1 * env.spinWeight;
 
-        const wicketProb = Math.min(0.85, wicketThreatScore / 115);
-        let wkts = 0;
-        if (availableWickets > 0 && Math.random() < wicketProb) {
-          wkts = 1;
-          if (availableWickets > 1 && Math.random() < wicketProb * 0.55) wkts = 2;
-          if (availableWickets > 2 && dna.variations >= 88 && Math.random() < 0.28) wkts = 3;
-        }
-        wkts = Math.min(availableWickets, wkts);
-        availableWickets -= wkts;
+        const wktShare = totalThreat > 0 ? (threat / totalThreat) * cappedWickets : 1;
+        const wkts = Math.max(0, Number(wktShare.toFixed(2)));
 
         const isHighRiskPhaseBowler = dna.deathBowl >= 80 || dna.ppBowl >= 82;
         const baseEcon = isHighRiskPhaseBowler
-          ? 8.85 - (dna.variations / 100) * 0.75 + env.runEnvShift / 22 + (Math.random() * 0.9 - 0.3)
-          : 7.85 - (dna.spinControl / 100) * 0.85 + env.runEnvShift / 22 + (Math.random() * 0.8 - 0.3);
+          ? 8.75 - (dna.variations / 100) * 0.75 + env.runEnvShift / 22
+          : 7.75 - (dna.spinControl / 100) * 0.85 + env.runEnvShift / 22;
 
         const oversBowled = 4;
-        const runsConceded = Math.max(15, Math.round(baseEcon * oversBowled));
+        const runsConceded = Math.max(16, Math.round(baseEcon * oversBowled));
 
         if (!playerTracker[bowler.id]) {
           playerTracker[bowler.id] = {
@@ -855,21 +859,21 @@ export function simulateMiniTournament(
                 : `Middle-Over Spin Controller (7-15 Overs · Spin ${dna.spinControl}/100)`,
           };
         }
-        playerTracker[bowler.id].wickets += wkts;
+        playerTracker[bowler.id].wickets = Number((playerTracker[bowler.id].wickets + wkts).toFixed(2));
         playerTracker[bowler.id].runsConceded += runsConceded;
         playerTracker[bowler.id].overs += oversBowled;
 
         const econBonus = runsConceded / oversBowled <= 7.5 ? 6 : 0;
-        const dualSkillBonus = bowler.role === 'AR' && wkts > 0 ? 12 : 0;
+        const dualSkillBonus = bowler.role === 'AR' && wkts > 0 ? 14 : 0;
         playerTracker[bowler.id].mvpPoints += wkts * 25 + econBonus + dualSkillBonus;
       });
 
-      return Math.max(115, totalRuns);
+      return Math.max(120, totalRuns);
     };
 
-    const scoreA = playInnings(sideA, teamA.name, sideB, teamB.name);
-    let scoreB = playInnings(sideB, teamB.name, sideA, teamA.name);
-    if (scoreA === scoreB) scoreB += 1;
+    const scoreA = playInnings(sideA, teamA.name, sideB, teamB.name, 1);
+    let scoreB = playInnings(sideB, teamB.name, sideA, teamA.name, 2);
+    if (scoreA === scoreB) scoreB -= 1;
 
     return {
       scoreA,
@@ -879,11 +883,12 @@ export function simulateMiniTournament(
     };
   };
 
+  let matchCounter = 1;
   const rounds = teams.length <= 4 ? 3 : 2;
   for (let r = 0; r < rounds; r++) {
     for (let i = 0; i < teams.length; i++) {
       for (let j = i + 1; j < teams.length; j++) {
-        const m = simulateMatch(teams[i], teams[j]);
+        const m = simulateMatch(teams[i], teams[j], matchCounter++);
         standings[teams[i].id].played++;
         standings[teams[j].id].played++;
         standings[teams[i].id].runsFor += m.scoreA;
@@ -910,7 +915,7 @@ export function simulateMiniTournament(
 
   const finalist1 = teams.find((t) => t.id === pointsTable[0]?.teamId) || teams[0];
   const finalist2 = teams.find((t) => t.id === pointsTable[1]?.teamId) || teams[1] || teams[0];
-  const grandFinal = simulateMatch(finalist1, finalist2);
+  const grandFinal = simulateMatch(finalist1, finalist2, 99);
 
   const allPlayersStats = Object.values(playerTracker);
 
@@ -955,7 +960,7 @@ export function simulateMiniTournament(
     purpleCap: {
       playerName: purpleLeader.playerName,
       teamName: purpleLeader.teamName,
-      wickets: purpleLeader.wickets,
+      wickets: Math.max(1, Math.round(purpleLeader.wickets)),
       economy: Number((purpleLeader.runsConceded / Math.max(1, purpleLeader.overs)).toFixed(2)),
       reason: purpleLeader.reason,
     },
@@ -971,8 +976,8 @@ export function simulateMiniTournament(
       mvpPoints: Math.round(mvpLeader.mvpPoints),
       summary:
         mvpLeader.role === 'AR'
-          ? `All-Round MVP (${mvpLeader.runs} Runs & ${mvpLeader.wickets} Wkts)`
-          : `${mvpLeader.runs} Runs · ${mvpLeader.wickets} Wkts`,
+          ? `All-Round MVP (${mvpLeader.runs} Runs & ${Math.round(mvpLeader.wickets)} Wkts)`
+          : `${mvpLeader.runs} Runs · ${Math.round(mvpLeader.wickets)} Wkts`,
     },
     pointsTable: pointsTable.map(({ rawNrr, ...rest }) => rest),
   };

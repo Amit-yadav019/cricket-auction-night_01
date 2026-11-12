@@ -11,7 +11,6 @@ import {
   Player,
   Team,
   AuctionSettings,
-  calculateMaxBid,
   calculateNextValidBid,
 } from '../game/auctionRules';
 
@@ -66,7 +65,7 @@ export function generateOwnerToken(): string {
   return `owner_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
 }
 
-// Strictly removes all undefined keys so Firestore never crashes
+// Strictly removes all undefined keys so Firestore never rejects writes
 function cleanData<T>(obj: T): T {
   return JSON.parse(JSON.stringify(obj));
 }
@@ -89,15 +88,16 @@ export function normalizeTeamsArray(rawTeams: any): Team[] {
       };
       if (t.claimedByOwnerName) cleanTeam.claimedByOwnerName = String(t.claimedByOwnerName);
       if (t.ownerToken) cleanTeam.ownerToken = String(t.ownerToken);
+      if (t.isAiBot) cleanTeam.isAiBot = Boolean(t.isAiBot);
       return cleanTeam as Team;
     });
 }
 
 function resolveRoomCode(passedCode?: string): string {
-  if (passedCode && passedCode.trim()) return passedCode.trim();
+  if (passedCode && passedCode.trim()) return passedCode.trim().toUpperCase();
   const urlParams = new URLSearchParams(window.location.search);
   const fromUrl = urlParams.get('room');
-  return fromUrl ? fromUrl.trim() : '';
+  return fromUrl ? fromUrl.trim().toUpperCase() : '';
 }
 
 export async function createAuctionRoom(
@@ -108,10 +108,11 @@ export async function createAuctionRoom(
   hostToken: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    const roomRef = doc(db, 'rooms', roomCode);
+    const code = resolveRoomCode(roomCode);
+    const roomRef = doc(db, 'rooms', code);
     const roomData = cleanData({
-      code: roomCode,
-      roomCode,
+      code,
+      roomCode: code,
       status: 'lobby',
       hostToken,
       hostHeartbeat: Date.now(),
@@ -143,6 +144,7 @@ export function subscribeToRoom(roomCode: string, onUpdate: (data: RoomData | nu
         const raw = snap.data();
         const data: RoomData = {
           ...(raw as any),
+          code: raw?.code || code,
           teams: normalizeTeamsArray(raw?.teams),
         };
         onUpdate(data);
@@ -157,7 +159,7 @@ export function subscribeToRoom(roomCode: string, onUpdate: (data: RoomData | nu
   );
 }
 
-export async function sendHostHeartbeat(roomCode: string, hostToken?: string): Promise<void> {
+export async function sendHostHeartbeat(roomCode: string, _hostToken?: string): Promise<void> {
   const code = resolveRoomCode(roomCode);
   if (!code) return;
   try {
@@ -212,7 +214,7 @@ export const claimTeam = claimTeamTransaction;
 export async function releaseTeamTransaction(
   roomCode: string,
   teamId: string,
-  ownerToken: string
+  _ownerToken: string
 ): Promise<{ success: boolean; error?: string }> {
   const code = resolveRoomCode(roomCode);
   const roomRef = doc(db, 'rooms', code);
@@ -247,7 +249,7 @@ export const releaseTeam = releaseTeamTransaction;
 
 export async function startBiddingTransaction(
   roomCode: string,
-  hostToken?: string
+  _hostToken?: string
 ): Promise<{ success: boolean; error?: string }> {
   const code = resolveRoomCode(roomCode);
   const roomRef = doc(db, 'rooms', code);
@@ -287,10 +289,10 @@ export async function placeBidTransaction(
   roomCodeInput: string,
   teamId: string,
   bidAmount: number,
-  multiplier: number,
-  expectedCurrentBid: number | null,
-  expectedPlayerId: string,
-  hostToken?: string
+  _multiplier: number,
+  _expectedCurrentBid: number | null,
+  _expectedPlayerId: string,
+  _hostToken?: string
 ): Promise<{ success: boolean; error?: string }> {
   const roomCode = resolveRoomCode(roomCodeInput);
   if (!roomCode) return { success: false, error: 'Room code not found.' };
@@ -300,7 +302,7 @@ export async function placeBidTransaction(
   try {
     return await runTransaction(db, async (transaction) => {
       const roomSnap = await transaction.get(roomRef);
-      if (!roomSnap.exists()) throw new Error(`Room not found.`);
+      if (!roomSnap.exists()) throw new Error('Room not found.');
 
       const room = roomSnap.data() as any;
       if (room.status !== 'active') throw new Error('Auction is not active.');
@@ -330,7 +332,7 @@ export async function placeBidTransaction(
       }
 
       if (bidAmount > biddingTeam.purse) {
-        throw new Error(`Insufficient purse.`);
+        throw new Error('Insufficient purse.');
       }
 
       const bidRecord = {
@@ -358,7 +360,7 @@ export async function placeBidTransaction(
 
 export async function markSoldTransaction(
   roomCodeInput: string,
-  hostToken: string
+  _hostToken: string
 ): Promise<{ success: boolean; error?: string }> {
   const roomCode = resolveRoomCode(roomCodeInput);
   const roomRef = doc(db, 'rooms', roomCode);
@@ -399,7 +401,6 @@ export async function markSoldTransaction(
       const pool: Player[] = room.playerPool || room.allPlayers || [];
       const currentIndex = room.currentPlayerIndex || 0;
 
-      // Update sold player status across playerPool and allPlayers
       const updatedPool = pool.map((p, idx) =>
         idx === currentIndex || p.id === soldPlayer.id ? soldPlayer : p
       );
@@ -435,7 +436,7 @@ export async function markSoldTransaction(
 
 export async function markUnsoldTransaction(
   roomCodeInput: string,
-  hostToken: string
+  _hostToken: string
 ): Promise<{ success: boolean; error?: string }> {
   const roomCode = resolveRoomCode(roomCodeInput);
   const roomRef = doc(db, 'rooms', roomCode);
@@ -453,7 +454,6 @@ export async function markUnsoldTransaction(
       const currentIndex = room.currentPlayerIndex || 0;
       const currentUnsoldPlayer: Player = { ...lot.player, status: 'unsold' };
 
-      // Crucial: Update player with status 'unsold' in the pool arrays
       const updatedPool = pool.map((p, idx) =>
         idx === currentIndex || p.id === currentUnsoldPlayer.id ? currentUnsoldPlayer : p
       );
@@ -488,7 +488,7 @@ export async function markUnsoldTransaction(
 
 export async function undoLastBidTransaction(
   roomCodeInput: string,
-  hostToken: string
+  _hostToken: string
 ): Promise<{ success: boolean; error?: string }> {
   const roomCode = resolveRoomCode(roomCodeInput);
   const roomRef = doc(db, 'rooms', roomCode);
@@ -523,7 +523,7 @@ export async function undoLastBidTransaction(
 
 export async function reAuctionUnsoldTransaction(
   roomCodeInput: string,
-  hostToken: string
+  _hostToken: string
 ): Promise<{ success: boolean; error?: string }> {
   const roomCode = resolveRoomCode(roomCodeInput);
   const roomRef = doc(db, 'rooms', roomCode);
@@ -535,14 +535,12 @@ export async function reAuctionUnsoldTransaction(
     const room = snap.data() as any;
     const pool: Player[] = room.playerPool || room.allPlayers || [];
 
-    // Filter all players that hold unsold status
     const unsold = pool.filter((p: Player) => p.status === 'unsold');
 
     if (unsold.length === 0) {
       return { success: false, error: 'No unsold players left to re-auction.' };
     }
 
-    // Reset unsold players to pending for the new round
     const resetUnsold = unsold.map((p: Player) => ({
       ...p,
       status: 'pending' as const,
@@ -571,7 +569,7 @@ export async function reAuctionUnsoldTransaction(
 
 export async function endAuctionTransaction(
   roomCodeInput: string,
-  hostToken: string
+  _hostToken: string
 ): Promise<{ success: boolean; error?: string }> {
   const roomCode = resolveRoomCode(roomCodeInput);
   const roomRef = doc(db, 'rooms', roomCode);
@@ -588,7 +586,7 @@ export async function endAuctionTransaction(
 
 export async function resetAuctionTransaction(
   roomCodeInput: string,
-  hostToken?: string
+  _hostToken?: string
 ): Promise<{ success: boolean; error?: string }> {
   const roomCode = resolveRoomCode(roomCodeInput);
   const roomRef = doc(db, 'rooms', roomCode);
@@ -622,6 +620,7 @@ export async function resetAuctionTransaction(
       teams: resetTeams,
       lineups: {},
       masterScoutReport: null,
+      tournamentResult: null,
     }));
 
     return { success: true };
@@ -640,13 +639,13 @@ export async function submitTeamLineupTransaction(
   const roomRef = doc(db, 'rooms', roomCode);
 
   try {
-    await updateDoc(roomRef, {
+    await updateDoc(roomRef, cleanData({
       [`lineups.${teamId}`]: {
         playingIds,
         benchIds,
         updatedAt: Date.now(),
       },
-    });
+    }));
     return { success: true };
   } catch (err: any) {
     return { success: false, error: err?.message || 'Failed to submit lineup.' };
@@ -662,11 +661,28 @@ export async function saveMasterScoutReport(
 
   try {
     await updateDoc(roomRef, {
-      masterScoutReport: report,
+      masterScoutReport: cleanData(report),
     });
     return { success: true };
   } catch (err: any) {
     return { success: false, error: err?.message || 'Failed to save scout report.' };
+  }
+}
+
+export async function saveTournamentSimulation(
+  roomCodeInput: string,
+  simResult: any
+): Promise<{ success: boolean; error?: string }> {
+  const roomCode = resolveRoomCode(roomCodeInput);
+  const roomRef = doc(db, 'rooms', roomCode);
+
+  try {
+    await updateDoc(roomRef, {
+      tournamentResult: cleanData(simResult),
+    });
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Failed to save tournament result.' };
   }
 }
 
@@ -706,9 +722,9 @@ export async function proposeTradeTransaction(
       createdAt: Date.now(),
     };
 
-    await updateDoc(roomRef, {
+    await updateDoc(roomRef, cleanData({
       [`trades.${tradeId}`]: tradeItem,
-    });
+    }));
 
     return { success: true };
   } catch (err: any) {
@@ -742,14 +758,12 @@ export async function respondTradeTransaction(
         return { success: true };
       }
 
-      // Mutual acceptance: Atomically swap players between both teams
       const rawTeams = normalizeTeamsArray(room.teams);
       const teamA = rawTeams.find((t) => t.id === trade.senderTeamId);
       const teamB = rawTeams.find((t) => t.id === trade.receiverTeamId);
 
       if (!teamA || !teamB) throw new Error('One of the trading teams was not found.');
 
-      // Check if both players still belong to their respective teams
       const hasPlayerA = teamA.players.some((p) => p.id === trade.senderPlayer.id);
       const hasPlayerB = teamB.players.some((p) => p.id === trade.receiverPlayer.id);
 
@@ -757,7 +771,6 @@ export async function respondTradeTransaction(
         throw new Error('One of the players is no longer with the original squad.');
       }
 
-      // Swap players
       teamA.players = teamA.players.map((p) =>
         p.id === trade.senderPlayer.id ? { ...trade.receiverPlayer, soldToTeamId: teamA.id } : p
       );
@@ -775,7 +788,8 @@ export async function respondTradeTransaction(
   } catch (err: any) {
     return { success: false, error: err?.message || 'Failed to process trade.' };
   }
-  }
+}
+
 export async function toggleThinkingTimeTransaction(
   roomCodeInput: string,
   teamId: string,
@@ -784,7 +798,7 @@ export async function toggleThinkingTimeTransaction(
   durationSeconds: number = 10,
   holdCount: number = 1
 ): Promise<{ success: boolean }> {
-  const roomCode = roomCodeInput.trim().toUpperCase();
+  const roomCode = resolveRoomCode(roomCodeInput);
   const roomRef = doc(db, 'rooms', roomCode);
   try {
     await updateDoc(roomRef, {
@@ -805,7 +819,6 @@ export async function toggleThinkingTimeTransaction(
   }
 }
 
-// 1. Live Table Reactions & Eye-Contact Bluffs (👀 Watching, 🔥 Price Up!, 🤝 Good Buy, ❌ Out)
 export async function sendTableReactionTransaction(
   roomCodeInput: string,
   teamId: string,
@@ -813,7 +826,7 @@ export async function sendTableReactionTransaction(
   emoji: string,
   label: string
 ): Promise<void> {
-  const roomCode = roomCodeInput.trim().toUpperCase();
+  const roomCode = resolveRoomCode(roomCodeInput);
   const roomRef = doc(db, 'rooms', roomCode);
   try {
     await updateDoc(roomRef, {
@@ -828,13 +841,12 @@ export async function sendTableReactionTransaction(
   } catch {}
 }
 
-// 2. Host Assigns/Removes Smart AI Bot Owner to an Empty Franchise Seat
 export async function toggleAiBotTeamTransaction(
   roomCodeInput: string,
   teamId: string,
   enableAi: boolean
 ): Promise<void> {
-  const roomCode = roomCodeInput.trim().toUpperCase();
+  const roomCode = resolveRoomCode(roomCodeInput);
   const roomRef = doc(db, 'rooms', roomCode);
   try {
     await runTransaction(db, async (tx) => {
@@ -851,18 +863,17 @@ export async function toggleAiBotTeamTransaction(
           ownerToken: enableAi ? `ai_bot_${t.id}` : '',
         };
       });
-      tx.update(roomRef, { teams: updated });
+      tx.update(roomRef, { teams: cleanData(updated) });
     });
   } catch {}
 }
 
-// 3. Accelerated Auction Shortlist Submission (Each franchise nominates up to 8 unsold/uncapped players)
 export async function submitAcceleratedShortlistTransaction(
   roomCodeInput: string,
   teamId: string,
   playerIds: string[]
 ): Promise<{ success: boolean }> {
-  const roomCode = roomCodeInput.trim().toUpperCase();
+  const roomCode = resolveRoomCode(roomCodeInput);
   const roomRef = doc(db, 'rooms', roomCode);
   try {
     await updateDoc(roomRef, {
@@ -874,12 +885,11 @@ export async function submitAcceleratedShortlistTransaction(
   }
 }
 
-// 4. Launch Accelerated Round with ONLY Nominated Shortlist Players
 export async function startAcceleratedRoundTransaction(
   roomCodeInput: string,
   hostToken: string
 ): Promise<{ success: boolean; error?: string }> {
-  const roomCode = roomCodeInput.trim().toUpperCase();
+  const roomCode = resolveRoomCode(roomCodeInput);
   const roomRef = doc(db, 'rooms', roomCode);
   try {
     return await runTransaction(db, async (tx) => {
@@ -901,7 +911,7 @@ export async function startAcceleratedRoundTransaction(
       }
 
       const [firstPlayer, ...restQueue] = acceleratedQueue;
-      tx.update(roomRef, {
+      tx.update(roomRef, cleanData({
         status: 'active',
         round: (room.round || 1) + 1,
         isAccelerated: true,
@@ -913,7 +923,7 @@ export async function startAcceleratedRoundTransaction(
           leadingTeamName: null,
           bidHistory: [],
         },
-      });
+      }));
       return { success: true };
     });
   } catch (err: any) {

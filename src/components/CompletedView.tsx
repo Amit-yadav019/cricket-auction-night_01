@@ -24,6 +24,8 @@ import {
   MapPin,
   ArrowUp,
   ArrowDown,
+  Users,
+  Clock,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import {
@@ -31,6 +33,7 @@ import {
   resetAuctionTransaction,
   submitTeamLineupTransaction,
   saveMasterScoutReport,
+  saveTournamentSimulation,
   reAuctionUnsoldTransaction,
   proposeTradeTransaction,
   respondTradeTransaction,
@@ -76,14 +79,14 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
   const [resetting, setResetting] = useState(false);
   const [reAuctioning, setReAuctioning] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
+  const [simulating, setSimulating] = useState(false);
   const [submittingLineup, setSubmittingLineup] = useState(false);
   const [lineupSuccessMsg, setLineupSuccessMsg] = useState('');
   const [expandedTeamId, setExpandedTeamId] = useState<string | null>(null);
   const [hasInitializedLineup, setHasInitializedLineup] = useState(false);
 
-  // Multi-select Pitch & Ground Conditions (Host can pick 1, 2, or multiple)
   const [selectedConditions, setSelectedConditions] = useState<PitchConditionTag[]>(['balanced']);
-  const [simResult, setSimResult] = useState<TournamentSimulationResult | null>(null);
+  const [localSimResult, setLocalSimResult] = useState<TournamentSimulationResult | null>(null);
 
   const [captainId, setCaptainId] = useState<string>('');
   const [viceCaptainId, setViceCaptainId] = useState<string>('');
@@ -104,8 +107,10 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
 
   const existingLineups = (room as any)?.lineups || {};
   const masterReport: MasterScoutReport | null = (room as any)?.masterScoutReport || null;
+  const sharedSimResult: TournamentSimulationResult | null =
+    (room as any)?.tournamentResult || localSimResult;
 
-  const roomCode = room?.code || '';
+  const roomCode = room?.code || (room as any)?.roomCode || '';
   const storedOwnerToken = roomCode
     ? localStorage.getItem(`cricket_owner_token_${roomCode}`) || ''
     : '';
@@ -123,6 +128,11 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
     (t) => myTeam && t.receiverTeamId === myTeam.id
   );
 
+  // Live count of how many franchises have locked their Batting Order
+  const lockedCount = teamsList.filter(
+    (t) => Array.isArray(existingLineups[t.id]?.playingIds) && existingLineups[t.id].playingIds.length > 0
+  ).length;
+
   useEffect(() => {
     try {
       confetti({ particleCount: 110, spread: 85, origin: { y: 0.5 } });
@@ -134,12 +144,13 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
     if (!myTeam || !myTeam.players) return;
 
     const saved = existingLineups[myTeam.id];
-    if (saved?.playingIds && saved.playingIds.length > 0) {
+    if (saved?.playingIds && saved.playingIds.length > 0 && !hasInitializedLineup) {
       setSelectedPlayingIds(saved.playingIds.slice(0, targetPlayingCount));
       if (saved.captainId) setCaptainId(saved.captainId);
       if (saved.viceCaptainId) setViceCaptainId(saved.viceCaptainId);
       if (saved.impactPlayerId) setImpactPlayerId(saved.impactPlayerId);
       if (saved.contractTypes) setContractTypes(saved.contractTypes);
+      setHasInitializedLineup(true);
     } else if (!hasInitializedLineup) {
       const rolePriority: Record<PlayerRole, number> = { WK: 1, BAT: 2, AR: 3, BOWL: 4 };
       const sortedSmart = [...myTeam.players].sort(
@@ -200,7 +211,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
   };
 
   const handleSaveLineup = async () => {
-    if (!room?.code || !myTeam || !myTeam.players) return;
+    if (!roomCode || !myTeam || !myTeam.players) return;
     if (selectedPlayingIds.length !== targetPlayingCount && myTeam.players.length >= targetPlayingCount) {
       alert(`Please select exactly ${targetPlayingCount} players for your Batting Order.`);
       return;
@@ -212,7 +223,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
 
     setSubmittingLineup(true);
     setLineupSuccessMsg('');
-    const res = await submitTeamLineupTransaction(room.code, myTeam.id, selectedPlayingIds, benchIds);
+    const res = await submitTeamLineupTransaction(roomCode, myTeam.id, selectedPlayingIds, benchIds);
     setSubmittingLineup(false);
 
     if (res.success) {
@@ -224,7 +235,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
   };
 
   const handleSendTradeProposal = async () => {
-    if (!room?.code || !myTeam || !myPlayerToOffer || !targetTeamId || !targetPlayerToAsk) {
+    if (!roomCode || !myTeam || !myPlayerToOffer || !targetTeamId || !targetPlayerToAsk) {
       alert('Please select both a player to offer and a player to request.');
       return;
     }
@@ -233,7 +244,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
 
     setIsProposingTrade(true);
     const res = await proposeTradeTransaction(
-      room.code,
+      roomCode,
       myTeam,
       myPlayerToOffer,
       targetTeam,
@@ -253,36 +264,46 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
   };
 
   const handleRespondToTrade = async (tradeId: string, accept: boolean) => {
-    if (!room?.code) return;
+    if (!roomCode) return;
     setTradeActionLoading(tradeId);
-    const res = await respondTradeTransaction(room.code, tradeId, accept);
+    const res = await respondTradeTransaction(roomCode, tradeId, accept);
     setTradeActionLoading(null);
     if (!res.success) alert(res.error || 'Failed to process trade.');
   };
 
+  const getMergedLineups = () => ({
+    ...existingLineups,
+    ...(myTeam && selectedPlayingIds.length > 0
+      ? {
+          [myTeam.id]: {
+            playingIds: selectedPlayingIds,
+            benchIds: myTeam.players
+              .filter((p) => !selectedPlayingIds.includes(p.id))
+              .map((p) => p.id),
+            impactPlayerId,
+            captainId,
+            viceCaptainId,
+            contractTypes,
+          },
+        }
+      : {}),
+  });
+
   const handleGenerateScoutReport = async () => {
-    if (!room?.code) return;
+    if (!roomCode) {
+      alert('Room code missing. Please refresh once.');
+      return;
+    }
     setAnalyzing(true);
     try {
-      const mergedLineups = {
-        ...existingLineups,
-        ...(myTeam
-          ? {
-              [myTeam.id]: {
-                playingIds: selectedPlayingIds,
-                benchIds: myTeam.players
-                  .filter((p) => !selectedPlayingIds.includes(p.id))
-                  .map((p) => p.id),
-                impactPlayerId,
-                captainId,
-                viceCaptainId,
-                contractTypes,
-              },
-            }
-          : {}),
-      };
+      const mergedLineups = getMergedLineups();
       const report = await generateMasterScoutReport(teamsList, mergedLineups, minSquad, selectedConditions);
-      await saveMasterScoutReport(room.code, report);
+      const saveRes = await saveMasterScoutReport(roomCode, report);
+      if (!saveRes.success) {
+        alert('Could not broadcast analysis: ' + (saveRes.error || 'Unknown error'));
+      } else if (report.rankings[0]) {
+        setExpandedTeamId(report.rankings[0].teamId);
+      }
     } catch (err: any) {
       alert('Analysis Error: ' + (err?.message || err));
     } finally {
@@ -290,58 +311,52 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
     }
   };
 
-  const handleRunTournamentSim = () => {
+  const handleRunTournamentSim = async () => {
     if (teamsList.length < 2) {
       alert('Need at least 2 teams to simulate a tournament.');
       return;
     }
-    const mergedLineups = {
-      ...existingLineups,
-      ...(myTeam
-        ? {
-            [myTeam.id]: {
-              playingIds: selectedPlayingIds,
-              benchIds: [],
-              impactPlayerId,
-              captainId,
-              viceCaptainId,
-              contractTypes,
-            },
-          }
-        : {}),
-    };
-    const result = simulateMiniTournament(teamsList, mergedLineups, minSquad, selectedConditions);
-    setSimResult(result);
-    sound.playFanfare();
+    setSimulating(true);
     try {
-      confetti({ particleCount: 90, spread: 70, origin: { y: 0.6 } });
-    } catch {}
+      const mergedLineups = getMergedLineups();
+      const result = simulateMiniTournament(teamsList, mergedLineups, minSquad, selectedConditions);
+      setLocalSimResult(result);
+      if (roomCode) {
+        await saveTournamentSimulation(roomCode, result);
+      }
+      sound.playFanfare();
+      try {
+        confetti({ particleCount: 90, spread: 70, origin: { y: 0.6 } });
+      } catch {}
+    } finally {
+      setSimulating(false);
+    }
   };
 
   const handleReAuctionUnsold = async () => {
-    if (!isHost || !room?.code) return;
+    if (!isHost || !roomCode) return;
     if (unsoldPlayers.length === 0) {
       alert('There are no unsold players left to re-auction.');
       return;
     }
-    const nextRound = (room.round || 1) + 1;
+    const nextRound = (room?.round || 1) + 1;
     if (
       confirm(
         `Start Round ${nextRound} with ${unsoldPlayers.length} unsold player(s)? Existing squads and remaining team budgets are preserved.`
       )
     ) {
       setReAuctioning(true);
-      const res = await reAuctionUnsoldTransaction(room.code, hostToken);
+      const res = await reAuctionUnsoldTransaction(roomCode, hostToken);
       setReAuctioning(false);
       if (!res.success) alert(res.error || 'Failed to start re-auction.');
     }
   };
 
   const handleResetAuction = async () => {
-    if (!isHost || !room?.code) return;
+    if (!isHost || !roomCode) return;
     if (confirm('Start a brand new auction? This resets budgets and squad rosters back to lobby.')) {
       setResetting(true);
-      await resetAuctionTransaction(room.code, hostToken);
+      await resetAuctionTransaction(roomCode, hostToken);
       setResetting(false);
     }
   };
@@ -434,7 +449,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
           Auction Concluded
         </h1>
         <p className="text-xs text-[var(--color-text-muted)] max-w-sm mx-auto mt-1.5 leading-relaxed">
-          Set your Batting Order (#1 to #{targetPlayingCount}), select Pitch & Ground conditions, and evaluate Avg. Batting & Bowling projections.
+          Each owner locks their Batting Order (#1 to #{targetPlayingCount}) below, then the Host evaluates pitch conditions & runs the synced league.
         </p>
 
         {onOpenSummary && (
@@ -448,6 +463,63 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
             </button>
           </div>
         )}
+      </div>
+
+      {/* LIVE BATTING ORDER SUBMISSION TRACKER */}
+      <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-3xl p-4 sm:p-5 shadow-md space-y-3">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-black font-display uppercase tracking-wider text-[var(--color-text-main)] flex items-center space-x-1.5">
+            <Users className="w-4 h-4 text-[var(--color-primary)]" />
+            <span>Franchise Batting Order Status</span>
+          </span>
+          <span
+            className={`text-[10px] font-mono font-black px-2.5 py-0.5 rounded-full border ${
+              lockedCount === teamsList.length
+                ? 'bg-emerald-500/15 text-emerald-500 border-emerald-500/40'
+                : 'bg-amber-500/15 text-amber-500 border-amber-500/40'
+            }`}
+          >
+            {lockedCount} / {teamsList.length} Locked
+          </span>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
+          {teamsList.map((t) => {
+            const isLocked =
+              Array.isArray(existingLineups[t.id]?.playingIds) &&
+              existingLineups[t.id].playingIds.length > 0;
+            return (
+              <div
+                key={t.id}
+                className={`p-2.5 rounded-2xl border flex items-center justify-between ${
+                  isLocked
+                    ? 'bg-emerald-500/10 border-emerald-500/35'
+                    : 'bg-[var(--color-surface-subtle)] border-[var(--color-border)]'
+                }`}
+              >
+                <div className="truncate mr-1.5">
+                  <span className="font-bold text-[var(--color-text-main)] block truncate text-[11px]">
+                    {t.name}
+                  </span>
+                  <span className="text-[9px] text-[var(--color-text-dim)] block truncate">
+                    {t.claimedByOwnerName || 'Unclaimed'}
+                  </span>
+                </div>
+                {isLocked ? (
+                  <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-emerald-500 text-stone-950 shrink-0 flex items-center space-x-0.5">
+                    <Check className="w-2.5 h-2.5" />
+                    <span>Locked</span>
+                  </span>
+                ) : (
+                  <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-500 shrink-0 flex items-center space-x-0.5">
+                    <Clock className="w-2.5 h-2.5" />
+                    <span>Pending</span>
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       {/* INCOMING TRADE PROPOSALS */}
@@ -893,6 +965,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
 
           {isHost && (
             <button
+              type="button"
               onClick={handleGenerateScoutReport}
               disabled={analyzing}
               className="text-[10px] font-bold font-display uppercase tracking-wider px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white transition cursor-pointer flex items-center space-x-1.5 shadow-md"
@@ -903,7 +976,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
           )}
         </div>
 
-        {/* MULTI-SELECT VENUE & PITCH CONDITION TOGGLES (Choose 1, 2, or All) */}
+        {/* MULTI-SELECT VENUE & PITCH CONDITION TOGGLES */}
         <div className="p-3.5 rounded-2xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)] space-y-2.5">
           <div className="flex items-center justify-between">
             <span className="text-[10px] font-black uppercase tracking-wider text-[var(--color-text-dim)] flex items-center space-x-1">
@@ -942,7 +1015,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
           </div>
         </div>
 
-        {!analyzing && masterReport && (
+        {!analyzing && masterReport && Array.isArray(masterReport.rankings) && (
           <div className="space-y-4">
             <div className="p-4 bg-gradient-to-r from-emerald-500/10 via-[var(--color-surface-subtle)] to-[var(--color-surface-subtle)] border border-emerald-500/25 rounded-2xl text-xs text-[var(--color-text-main)] italic leading-relaxed">
               "{masterReport.executiveSummary}"
@@ -989,7 +1062,6 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
                         </div>
                       </div>
 
-                      {/* PROJECTED AVG. BATTING SCORE & AVG. BOWLING RUNS CONCEDED BAR */}
                       {rep.projectedStats && (
                         <div className="grid grid-cols-3 gap-2 pt-1 text-center font-mono">
                           <div className="p-2 rounded-xl bg-emerald-500/10 border border-emerald-500/25">
@@ -1111,7 +1183,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
         )}
       </div>
 
-      {/* HEAD-TO-HEAD MINI-LEAGUE SIMULATOR */}
+      {/* SYNCED MINI-LEAGUE SIMULATOR (Identical across Host & all Owners) */}
       <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-3xl p-5 sm:p-6 shadow-xl space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-2.5">
@@ -1123,76 +1195,85 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
                 Mini-League Simulator
               </h2>
               <p className="text-[11px] text-[var(--color-text-dim)]">
-                {targetPlayingCount}-Player Format · {selectedConditions.length} Active Ground Conditions
+                {targetPlayingCount}-Player Format · Synced Official Tournament Results
               </p>
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={handleRunTournamentSim}
-            className="text-[10px] font-black font-display uppercase tracking-wider px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-stone-950 transition cursor-pointer shadow-md"
-          >
-            {simResult ? 'Re-Simulate' : 'Simulate Tournament'}
-          </button>
+          {isHost && (
+            <button
+              type="button"
+              disabled={simulating}
+              onClick={handleRunTournamentSim}
+              className="text-[10px] font-black font-display uppercase tracking-wider px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-stone-950 transition cursor-pointer shadow-md"
+            >
+              {simulating ? 'Simulating...' : sharedSimResult ? 'Re-Simulate' : 'Simulate Tournament'}
+            </button>
+          )}
         </div>
 
-        {simResult && (
+        {!sharedSimResult && !isHost && (
+          <div className="p-4 rounded-2xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)] text-center text-xs text-[var(--color-text-muted)]">
+            Waiting for the Host to launch the official Mini-League Tournament simulation...
+          </div>
+        )}
+
+        {sharedSimResult && (
           <div className="space-y-4 pt-2 border-t border-[var(--color-border)]">
             <div className="p-4 rounded-2xl bg-gradient-to-r from-amber-500/20 via-yellow-500/10 to-transparent border border-amber-500/40 text-center space-y-1">
               <span className="text-[10px] font-black uppercase tracking-widest text-amber-500 block">
                 🏆 Tournament Champion
               </span>
               <h3 className="text-2xl font-black font-display uppercase text-[var(--color-text-main)]">
-                {simResult.championTeamName}
+                {sharedSimResult.championTeamName}
               </h3>
-              <p className="text-[11px] text-[var(--color-text-muted)]">{simResult.finalMatchSummary}</p>
+              <p className="text-[11px] text-[var(--color-text-muted)]">{sharedSimResult.finalMatchSummary}</p>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
               <div className="p-3 rounded-2xl bg-orange-500/10 border border-orange-500/30">
                 <span className="text-[9px] font-black uppercase text-orange-500 block">🧢 Orange Cap (Consistency & Order)</span>
                 <span className="font-black text-sm text-[var(--color-text-main)] block mt-0.5 truncate">
-                  {simResult.orangeCap.playerName}
+                  {sharedSimResult.orangeCap.playerName}
                 </span>
                 <span className="text-[10px] text-[var(--color-text-muted)] font-mono block">
-                  {simResult.orangeCap.runs} Runs · SR {simResult.orangeCap.strikeRate}
+                  {sharedSimResult.orangeCap.runs} Runs · SR {sharedSimResult.orangeCap.strikeRate}
                 </span>
                 <span className="text-[9px] text-orange-400/90 block mt-0.5 truncate">
-                  {simResult.orangeCap.reason}
+                  {sharedSimResult.orangeCap.reason}
                 </span>
               </div>
 
               <div className="p-3 rounded-2xl bg-purple-500/10 border border-purple-500/30">
                 <span className="text-[9px] font-black uppercase text-purple-500 block">🧢 Purple Cap (Phase Wicket-Taker)</span>
                 <span className="font-black text-sm text-[var(--color-text-main)] block mt-0.5 truncate">
-                  {simResult.purpleCap.playerName}
+                  {sharedSimResult.purpleCap.playerName}
                 </span>
                 <span className="text-[10px] text-[var(--color-text-muted)] font-mono block">
-                  {simResult.purpleCap.wickets} Wkts · Econ {simResult.purpleCap.economy}
+                  {sharedSimResult.purpleCap.wickets} Wkts · Econ {sharedSimResult.purpleCap.economy}
                 </span>
                 <span className="text-[9px] text-purple-400/90 block mt-0.5 truncate">
-                  {simResult.purpleCap.reason}
+                  {sharedSimResult.purpleCap.reason}
                 </span>
               </div>
 
               <div className="p-3 rounded-2xl bg-emerald-500/10 border border-emerald-500/30">
                 <span className="text-[9px] font-black uppercase text-emerald-500 block">⚡ Super Striker</span>
                 <span className="font-black text-sm text-[var(--color-text-main)] block mt-0.5 truncate">
-                  {simResult.superStriker?.playerName || simResult.orangeCap.playerName}
+                  {sharedSimResult.superStriker?.playerName || sharedSimResult.orangeCap.playerName}
                 </span>
                 <span className="text-[10px] text-[var(--color-text-muted)] font-mono">
-                  SR {simResult.superStriker?.strikeRate || simResult.orangeCap.strikeRate} ({simResult.superStriker?.runs || simResult.orangeCap.runs} Runs)
+                  SR {sharedSimResult.superStriker?.strikeRate || sharedSimResult.orangeCap.strikeRate} ({sharedSimResult.superStriker?.runs || sharedSimResult.orangeCap.runs} Runs)
                 </span>
               </div>
 
               <div className="p-3 rounded-2xl bg-amber-500/15 border border-amber-500/40">
                 <span className="text-[9px] font-black uppercase text-amber-500 block">🏅 Man of the Tournament (MVP)</span>
                 <span className="font-black text-sm text-[var(--color-text-main)] block mt-0.5 truncate">
-                  {simResult.manOfTournament?.playerName || simResult.orangeCap.playerName}
+                  {sharedSimResult.manOfTournament?.playerName || sharedSimResult.orangeCap.playerName}
                 </span>
                 <span className="text-[10px] text-[var(--color-text-muted)] font-mono block">
-                  {simResult.manOfTournament?.mvpPoints || 0} MVP Pts · {simResult.manOfTournament?.summary}
+                  {sharedSimResult.manOfTournament?.mvpPoints || 0} MVP Pts · {sharedSimResult.manOfTournament?.summary}
                 </span>
               </div>
             </div>
@@ -1210,7 +1291,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[var(--color-border)]">
-                  {simResult.pointsTable.map((row) => (
+                  {sharedSimResult.pointsTable.map((row) => (
                     <tr key={row.teamId} className="font-mono">
                       <td className="py-2 px-3 font-sans font-bold text-[var(--color-text-main)]">{row.teamName}</td>
                       <td className="py-2 px-2 text-center">{row.played}</td>
