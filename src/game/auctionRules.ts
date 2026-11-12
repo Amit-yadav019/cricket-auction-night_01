@@ -249,14 +249,12 @@ export function pickRandomBalanced(pool: Player[], totalCount: number): Player[]
   const roles: PlayerRole[] = ['BAT', 'WK', 'AR', 'BOWL'];
   const totalPoolSize = pool.length;
 
-  // 1. Calculate ideal fractional quota according to exact percentage representation in the pool
   const targets = roles.map((role) => ({
     role,
     fractional: (byRole[role].length / totalPoolSize) * totalCount,
     allocated: Math.floor((byRole[role].length / totalPoolSize) * totalCount),
   }));
 
-  // 2. Guarantee >= 2 per role when pool size and totalCount permit
   if (totalCount >= 8) {
     targets.forEach((t) => {
       if (t.allocated < 2 && byRole[t.role].length >= 2) {
@@ -265,10 +263,8 @@ export function pickRandomBalanced(pool: Player[], totalCount: number): Player[]
     });
   }
 
-  // 3. Reconcile remainder to guarantee exact totalCount sum
   let currentAllocated = targets.reduce((sum, t) => sum + t.allocated, 0);
 
-  // If minimum guarantees caused over-allocation, decrement from the ones with least remainder
   while (currentAllocated > totalCount) {
     targets.sort((a, b) => (a.fractional - a.allocated) - (b.fractional - b.allocated));
     for (const t of targets) {
@@ -279,7 +275,6 @@ export function pickRandomBalanced(pool: Player[], totalCount: number): Player[]
     }
   }
 
-  // If under-allocated, distribute to highest fractional remainders (Hamilton-Hare)
   while (currentAllocated < totalCount) {
     targets.sort((a, b) => {
       const remA = a.fractional - a.allocated;
@@ -293,7 +288,6 @@ export function pickRandomBalanced(pool: Player[], totalCount: number): Player[]
     currentAllocated++;
   }
 
-  // 4. Sample randomly without replacement from each role partition
   const selected: Player[] = [];
   targets.forEach(({ role, allocated }) => {
     const shuffledRole = shuffle(byRole[role]);
@@ -302,7 +296,16 @@ export function pickRandomBalanced(pool: Player[], totalCount: number): Player[]
 
   return shuffle(selected);
 }
-export type PitchProfile = 'balanced' | 'spin' | 'flat' | 'seam';
+
+export type PitchCondition =
+  | 'balanced'
+  | 'spin'
+  | 'flat'
+  | 'bounce'
+  | 'large_ground'
+  | 'small_ground';
+
+export type PitchProfile = PitchCondition;
 
 export interface StructuredAuctionSet {
   setNumber: number;
@@ -310,12 +313,9 @@ export interface StructuredAuctionSet {
   players: Player[];
 }
 
-/**
- * Dynamically scales required bowlers & keepers to whatever minSquad size the room uses (e.g., 7, 9, or 11).
- */
 export function getDynamicRoleRequirements(minSquad: number) {
   const playingCount = Math.max(5, minSquad || 11);
-  const minBowlers = Math.max(3, Math.floor(playingCount * 0.45)); // e.g., 3 bowlers for 7-player game, 5 for 11-player
+  const minBowlers = Math.max(3, Math.floor(playingCount * 0.45));
   const sixthBowlerTarget = minBowlers + 1;
   return {
     playingCount,
@@ -324,12 +324,6 @@ export function getDynamicRoleRequirements(minSquad: number) {
   };
 }
 
-/**
- * Groups any 350-player pool into Official IPL-Style Sets:
- * Set 1 & 2: Marquee Superstars (6 per set)
- * Sets 3-7: Capped Batters, All-Rounders, Wicketkeepers, Fast Bowlers, Spinners
- * Sets 8-12: Uncapped Indian & Overseas Specialists
- */
 export function buildStructuredAuctionSets(players: Player[]): StructuredAuctionSet[] {
   const remaining = [...players];
   const takeMatching = (predicate: (p: Player) => boolean, limit?: number): Player[] => {
@@ -345,7 +339,6 @@ export function buildStructuredAuctionSets(players: Player[]): StructuredAuction
     return matched;
   };
 
-  // Sort high-base-price stars to the front for Marquee sets
   remaining.sort((a, b) => (b.basePrice || 0.5) - (a.basePrice || 0.5));
 
   const set1 = takeMatching((p) => (p.basePrice || 0) >= 2.0 && p.cappedStatus !== 'Uncapped', 6);
@@ -367,7 +360,7 @@ export function buildStructuredAuctionSets(players: Player[]): StructuredAuction
   const set9 = takeMatching((p) => p.role === 'AR');
   const set10 = takeMatching((p) => p.role === 'WK');
   const set11 = takeMatching((p) => p.role === 'BOWL' && !isSpinner(p));
-  const set12 = takeMatching((p) => true); // Remaining spinners & prospects
+  const set12 = takeMatching(() => true);
 
   const rawSets: StructuredAuctionSet[] = [
     { setNumber: 1, title: 'Set 1 · Marquee Superstars I', players: set1 },

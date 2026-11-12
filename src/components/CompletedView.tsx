@@ -8,13 +8,11 @@ import {
   ChevronDown,
   ChevronUp,
   ShieldCheck,
-  Zap,
   Crown,
   Medal,
   AlertTriangle,
   Check,
   Layers,
-  TrendingUp,
   ArrowDownUp,
   ShieldAlert,
   BarChart3,
@@ -23,8 +21,9 @@ import {
   X,
   Send,
   Swords,
-  Star,
   MapPin,
+  ArrowUp,
+  ArrowDown,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import {
@@ -41,7 +40,6 @@ import {
   PlayerRole,
   Team,
   Player,
-  PitchProfile,
   getDynamicRoleRequirements,
 } from '../game/auctionRules';
 import { sound } from '../services/soundService';
@@ -50,6 +48,7 @@ import {
   MasterScoutReport,
   simulateMiniTournament,
   TournamentSimulationResult,
+  PitchConditionTag,
 } from '../services/aiService';
 
 interface CompletedViewProps {
@@ -58,6 +57,15 @@ interface CompletedViewProps {
   hostToken: string;
   onOpenSummary?: () => void;
 }
+
+const PITCH_GROUND_OPTIONS: Array<{ id: PitchConditionTag; label: string; desc: string }> = [
+  { id: 'balanced', label: '⚖️ Balanced Pitch & Ground', desc: 'Neutral' },
+  { id: 'spin', label: '🌀 Spin Friendly', desc: 'Grip & Turn' },
+  { id: 'flat', label: '🚀 Flat Pitch', desc: 'True Bounce' },
+  { id: 'bounce', label: '⚡ Bounce & Seam', desc: 'Carry' },
+  { id: 'large_ground', label: '🏟️ Large Ground', desc: 'Long Boundaries' },
+  { id: 'small_ground', label: '💥 Small Ground', desc: 'Short Boundaries' },
+];
 
 export const CompletedView: React.FC<CompletedViewProps> = ({
   room,
@@ -73,11 +81,10 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
   const [expandedTeamId, setExpandedTeamId] = useState<string | null>(null);
   const [hasInitializedLineup, setHasInitializedLineup] = useState(false);
 
-  // Pitch Condition & Tournament Simulation
-  const [selectedPitch, setSelectedPitch] = useState<PitchProfile>('balanced');
+  // Multi-select Pitch & Ground Conditions (Host can pick 1, 2, or multiple)
+  const [selectedConditions, setSelectedConditions] = useState<PitchConditionTag[]>(['balanced']);
   const [simResult, setSimResult] = useState<TournamentSimulationResult | null>(null);
 
-  // Captain, Vice-Captain, Impact Sub & Contract Locks
   const [captainId, setCaptainId] = useState<string>('');
   const [viceCaptainId, setViceCaptainId] = useState<string>('');
   const [impactPlayerId, setImpactPlayerId] = useState<string>('');
@@ -115,9 +122,6 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
   const incomingTrades = activePendingTrades.filter(
     (t) => myTeam && t.receiverTeamId === myTeam.id
   );
-  const outgoingTrades = activePendingTrades.filter(
-    (t) => myTeam && t.senderTeamId === myTeam.id
-  );
 
   useEffect(() => {
     try {
@@ -137,11 +141,15 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
       if (saved.impactPlayerId) setImpactPlayerId(saved.impactPlayerId);
       if (saved.contractTypes) setContractTypes(saved.contractTypes);
     } else if (!hasInitializedLineup) {
-      const initialXI = myTeam.players.slice(0, targetPlayingCount).map((p) => p.id);
+      const rolePriority: Record<PlayerRole, number> = { WK: 1, BAT: 2, AR: 3, BOWL: 4 };
+      const sortedSmart = [...myTeam.players].sort(
+        (a, b) => rolePriority[a.role] - rolePriority[b.role]
+      );
+      const initialXI = sortedSmart.slice(0, targetPlayingCount).map((p) => p.id);
       setSelectedPlayingIds(initialXI);
       if (initialXI[0]) setCaptainId(initialXI[0]);
       if (initialXI[1]) setViceCaptainId(initialXI[1]);
-      if (myTeam.players[targetPlayingCount]) setImpactPlayerId(myTeam.players[targetPlayingCount].id);
+      if (sortedSmart[targetPlayingCount]) setImpactPlayerId(sortedSmart[targetPlayingCount].id);
       setHasInitializedLineup(true);
     }
   }, [myTeam?.id, myTeam?.players, existingLineups, hasInitializedLineup, targetPlayingCount]);
@@ -151,6 +159,30 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
       setExpandedTeamId(masterReport.rankings[0].teamId);
     }
   }, [masterReport]);
+
+  const handleToggleCondition = (tag: PitchConditionTag) => {
+    setSelectedConditions((prev) => {
+      if (tag === 'balanced') {
+        return ['balanced'];
+      }
+      const withoutBalanced = prev.filter((item) => item !== 'balanced');
+      if (withoutBalanced.includes(tag)) {
+        const next = withoutBalanced.filter((item) => item !== tag);
+        return next.length > 0 ? next : ['balanced'];
+      }
+      return [...withoutBalanced, tag];
+    });
+  };
+
+  const handleMoveBattingOrder = (index: number, direction: 'up' | 'down') => {
+    setSelectedPlayingIds((prev) => {
+      const next = [...prev];
+      const targetIdx = direction === 'up' ? index - 1 : index + 1;
+      if (targetIdx < 0 || targetIdx >= next.length) return prev;
+      [next[index], next[targetIdx]] = [next[targetIdx], next[index]];
+      return next;
+    });
+  };
 
   const handlePlayerTap = (playerId: string) => {
     setSelectedPlayingIds((prev) => {
@@ -170,7 +202,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
   const handleSaveLineup = async () => {
     if (!room?.code || !myTeam || !myTeam.players) return;
     if (selectedPlayingIds.length !== targetPlayingCount && myTeam.players.length >= targetPlayingCount) {
-      alert(`Please select exactly ${targetPlayingCount} players for your Starting Lineup.`);
+      alert(`Please select exactly ${targetPlayingCount} players for your Batting Order.`);
       return;
     }
 
@@ -184,7 +216,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
     setSubmittingLineup(false);
 
     if (res.success) {
-      setLineupSuccessMsg(`Starting ${targetPlayingCount} + Impact Sub & Leadership locked!`);
+      setLineupSuccessMsg(`Batting Order (#1–#${selectedPlayingIds.length}) & Leadership locked!`);
       setTimeout(() => setLineupSuccessMsg(''), 4500);
     } else {
       alert(res.error || 'Failed to submit lineup');
@@ -249,7 +281,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
             }
           : {}),
       };
-      const report = await generateMasterScoutReport(teamsList, mergedLineups, minSquad, selectedPitch);
+      const report = await generateMasterScoutReport(teamsList, mergedLineups, minSquad, selectedConditions);
       await saveMasterScoutReport(room.code, report);
     } catch (err: any) {
       alert('Analysis Error: ' + (err?.message || err));
@@ -278,7 +310,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
           }
         : {}),
     };
-    const result = simulateMiniTournament(teamsList, mergedLineups, minSquad, selectedPitch);
+    const result = simulateMiniTournament(teamsList, mergedLineups, minSquad, selectedConditions);
     setSimResult(result);
     sound.playFanfare();
     try {
@@ -363,13 +395,24 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
     );
   };
 
-  const myPlayingPlayers = (myTeam?.players || []).filter((p) => selectedPlayingIds.includes(p.id));
+  const orderedPlayingPlayers: Player[] = selectedPlayingIds
+    .map((id) => myTeam?.players?.find((p) => p.id === id))
+    .filter((p): p is Player => Boolean(p));
+
   const myBenchPlayers = (myTeam?.players || []).filter((p) => !selectedPlayingIds.includes(p.id));
-  const myWkCount = myPlayingPlayers.filter((p) => p.role === 'WK').length;
-  const myBatCount = myPlayingPlayers.filter((p) => p.role === 'BAT').length;
-  const myArCount = myPlayingPlayers.filter((p) => p.role === 'AR').length;
-  const myBowlCount = myPlayingPlayers.filter((p) => p.role === 'BOWL').length;
+  const myWkCount = orderedPlayingPlayers.filter((p) => p.role === 'WK').length;
+  const myBatCount = orderedPlayingPlayers.filter((p) => p.role === 'BAT').length;
+  const myArCount = orderedPlayingPlayers.filter((p) => p.role === 'AR').length;
+  const myBowlCount = orderedPlayingPlayers.filter((p) => p.role === 'BOWL').length;
   const myTotalBowlers = myBowlCount + myArCount;
+
+  const getSlotPhaseLabel = (slot1Based: number, total: number) => {
+    const ratio = slot1Based / Math.max(1, total);
+    if (ratio <= 0.3) return 'Opener (PP 1-6)';
+    if (ratio <= 0.58) return 'Middle (Overs 7-15)';
+    if (ratio <= 0.82) return 'Finisher (16-20)';
+    return 'Tail / Bowler';
+  };
 
   const otherTeams = teamsList.filter((t) => myTeam && t.id !== myTeam.id);
   const selectedOtherTeam = teamsList.find((t) => t.id === targetTeamId);
@@ -391,7 +434,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
           Auction Concluded
         </h1>
         <p className="text-xs text-[var(--color-text-muted)] max-w-sm mx-auto mt-1.5 leading-relaxed">
-          Select your Starting {targetPlayingCount}, assign Captain/VC & Impact Sub, pick pitch conditions, and simulate the league.
+          Set your Batting Order (#1 to #{targetPlayingCount}), select Pitch & Ground conditions, and evaluate Avg. Batting & Bowling projections.
         </p>
 
         {onOpenSummary && (
@@ -428,24 +471,12 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
               <div className="flex items-center justify-between bg-[var(--color-surface-subtle)] p-3 rounded-2xl border border-[var(--color-border)] text-xs">
                 <div>
                   <span className="text-[9px] text-[var(--color-text-dim)] uppercase font-bold block">You Receive</span>
-                  <div className="flex items-center space-x-1.5 font-bold text-emerald-500">
-                    <span className={`text-[8px] font-black px-1 py-0.5 rounded border uppercase ${getRoleBadgeStyle(trade.senderPlayer.role)}`}>
-                      {trade.senderPlayer.role}
-                    </span>
-                    <span>{trade.senderPlayer.name}</span>
-                  </div>
+                  <span className="font-bold text-emerald-500">{trade.senderPlayer.name} ({trade.senderPlayer.role})</span>
                 </div>
-
                 <ArrowDownUp className="w-4 h-4 text-[var(--color-text-dim)]" />
-
                 <div className="text-right">
                   <span className="text-[9px] text-[var(--color-text-dim)] uppercase font-bold block">You Give</span>
-                  <div className="flex items-center justify-end space-x-1.5 font-bold text-rose-500">
-                    <span>{trade.receiverPlayer.name}</span>
-                    <span className={`text-[8px] font-black px-1 py-0.5 rounded border uppercase ${getRoleBadgeStyle(trade.receiverPlayer.role)}`}>
-                      {trade.receiverPlayer.role}
-                    </span>
-                  </div>
+                  <span className="font-bold text-rose-500">{trade.receiverPlayer.name} ({trade.receiverPlayer.role})</span>
                 </div>
               </div>
 
@@ -473,7 +504,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
         </div>
       )}
 
-      {/* OWNER DYNAMIC SQUAD STUDIO (Starting N + Impact Sub + C/VC + 3-Yr Contracts) */}
+      {/* OWNER BATTING ORDER & TACTICAL STUDIO (#1 to #N) */}
       {myTeam && (
         <div className="bg-[var(--color-surface)] border-2 border-[var(--color-primary)]/50 rounded-3xl p-5 sm:p-6 shadow-xl space-y-4">
           <div className="flex items-center justify-between border-b border-[var(--color-border)] pb-3.5">
@@ -483,7 +514,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
               </div>
               <div>
                 <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--color-primary)] block leading-none">
-                  Front Office Studio
+                  Batting Order & Tactical Studio
                 </span>
                 <h2 className="text-base font-black font-display uppercase text-[var(--color-text-main)]">
                   {myTeam.name}
@@ -503,45 +534,43 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
 
               <span
                 className={`font-mono text-xs font-black px-3 py-1 rounded-full border ${
-                  selectedPlayingIds.length === targetPlayingCount
+                  orderedPlayingPlayers.length === targetPlayingCount
                     ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/40'
                     : 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/40'
                 }`}
               >
-                {selectedPlayingIds.length} / {targetPlayingCount}
+                {orderedPlayingPlayers.length} / {targetPlayingCount}
               </span>
             </div>
           </div>
 
-          {/* Dynamic Role Breakdown */}
           <div className="grid grid-cols-4 gap-2 p-2.5 rounded-2xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)] text-center text-[10px]">
             <div className="p-1.5 rounded-xl bg-[var(--color-surface)]">
-              <span className="text-[var(--color-text-dim)] block text-[9px] uppercase font-bold">WK</span>
+              <span className="text-[9px] text-[var(--color-text-dim)] block uppercase font-bold">WK</span>
               <span className={`font-mono font-black ${myWkCount >= 1 ? 'text-emerald-500' : 'text-rose-500'}`}>
                 {myWkCount} {myWkCount >= 1 ? '✓' : '⚠️'}
               </span>
             </div>
             <div className="p-1.5 rounded-xl bg-[var(--color-surface)]">
-              <span className="text-[var(--color-text-dim)] block text-[9px] uppercase font-bold">BAT</span>
+              <span className="text-[9px] text-[var(--color-text-dim)] block uppercase font-bold">BAT</span>
               <span className="font-mono font-black text-[var(--color-text-main)]">{myBatCount}</span>
             </div>
             <div className="p-1.5 rounded-xl bg-[var(--color-surface)]">
-              <span className="text-[var(--color-text-dim)] block text-[9px] uppercase font-bold">AR</span>
+              <span className="text-[9px] text-[var(--color-text-dim)] block uppercase font-bold">AR</span>
               <span className="font-mono font-black text-[var(--color-text-main)]">{myArCount}</span>
             </div>
             <div className="p-1.5 rounded-xl bg-[var(--color-surface)]">
-              <span className="text-[var(--color-text-dim)] block text-[9px] uppercase font-bold">BOWLERS</span>
+              <span className="text-[9px] text-[var(--color-text-dim)] block uppercase font-bold">BOWLERS</span>
               <span className={`font-mono font-black ${myTotalBowlers >= minBowlers ? 'text-emerald-500' : 'text-amber-500'}`}>
                 {myTotalBowlers} ({minBowlers}+ Req)
               </span>
             </div>
           </div>
 
-          {/* Captain, Vice-Captain & Impact Player Selectors */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
             <div>
               <label className="text-[9px] font-black uppercase text-amber-500 block mb-1">
-                👑 Captain (1.5x Composure)
+                👑 Captain (1.5x)
               </label>
               <select
                 value={captainId}
@@ -549,7 +578,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
                 className="w-full p-2 rounded-xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)] text-[11px] font-bold text-[var(--color-text-main)]"
               >
                 <option value="">-- Captain --</option>
-                {myPlayingPlayers.map((p) => (
+                {orderedPlayingPlayers.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name} ({p.role})
                   </option>
@@ -567,7 +596,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
                 className="w-full p-2 rounded-xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)] text-[11px] font-bold text-[var(--color-text-main)]"
               >
                 <option value="">-- Vice-Captain --</option>
-                {myPlayingPlayers
+                {orderedPlayingPlayers
                   .filter((p) => p.id !== captainId)
                   .map((p) => (
                     <option key={p.id} value={p.id}>
@@ -596,60 +625,102 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
             </div>
           </div>
 
-          {/* Starting Lineup (Dynamic Count = targetPlayingCount) */}
-          <div className="space-y-4">
+          <div className="space-y-3">
             <div>
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-black font-display uppercase tracking-wider text-emerald-600 dark:text-emerald-400 flex items-center space-x-1.5">
                   <CheckCircle2 className="w-4 h-4" />
-                  <span>Starting {targetPlayingCount} ({myPlayingPlayers.length})</span>
+                  <span>Batting Order (#1 to #{orderedPlayingPlayers.length})</span>
                 </span>
-                <span className="text-[10px] text-[var(--color-text-dim)]">Tap player to bench · Toggle 1Yr/3Yr</span>
+                <span className="text-[10px] text-[var(--color-text-dim)]">Use ▲▼ to set sequence</span>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-56 overflow-y-auto pr-1">
-                {myPlayingPlayers.map((player) => {
+              <div className="space-y-1.5 max-h-72 overflow-y-auto pr-1">
+                {orderedPlayingPlayers.map((player, idx) => {
+                  const slotNum = idx + 1;
                   const is3Yr = contractTypes[player.id] === '3yr';
+                  const phaseHint = getSlotPhaseLabel(slotNum, targetPlayingCount);
+                  const isMisalignedBowler = player.role === 'BOWL' && slotNum / targetPlayingCount <= 0.55;
+
                   return (
                     <div
                       key={player.id}
-                      className="p-2 rounded-2xl border border-emerald-500/40 bg-emerald-500/10 flex items-center justify-between text-xs"
+                      className={`p-2 rounded-2xl border flex items-center justify-between text-xs transition ${
+                        isMisalignedBowler
+                          ? 'border-rose-500/50 bg-rose-500/10'
+                          : 'border-emerald-500/35 bg-emerald-500/10'
+                      }`}
                     >
-                      <button
-                        type="button"
-                        onClick={() => handlePlayerTap(player.id)}
-                        className="flex items-center space-x-1.5 truncate text-left flex-1 cursor-pointer"
-                      >
-                        <span className={`text-[9px] font-black px-1.5 py-0.5 rounded border uppercase ${getRoleBadgeStyle(player.role)}`}>
+                      <div className="flex items-center space-x-2 truncate flex-1">
+                        <span className="w-6 h-6 rounded-lg bg-stone-950 text-amber-400 font-mono font-black text-[11px] flex items-center justify-center shrink-0">
+                          #{slotNum}
+                        </span>
+
+                        <span className={`text-[9px] font-black px-1.5 py-0.5 rounded border uppercase shrink-0 ${getRoleBadgeStyle(player.role)}`}>
                           {player.role}
                         </span>
-                        <span className="font-bold text-[var(--color-text-main)] truncate">{player.name}</span>
-                      </button>
 
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setContractTypes((prev) => ({
-                            ...prev,
-                            [player.id]: is3Yr ? '1yr' : '3yr',
-                          }))
-                        }
-                        className={`ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-mono font-black uppercase cursor-pointer ${
-                          is3Yr
-                            ? 'bg-amber-500 text-stone-950'
-                            : 'bg-[var(--color-surface)] text-[var(--color-text-dim)]'
-                        }`}
-                        title="Toggle 1-Year Rental vs 3-Year Franchise Lock"
-                      >
-                        {is3Yr ? '3YR' : '1YR'}
-                      </button>
+                        <div className="truncate">
+                          <span className="font-bold text-[var(--color-text-main)] block truncate">
+                            {player.name}
+                          </span>
+                          <span className={`text-[9px] font-mono ${isMisalignedBowler ? 'text-rose-500 font-bold' : 'text-[var(--color-text-dim)]'}`}>
+                            {isMisalignedBowler ? '⚠️ Bowler too high in order' : phaseHint}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center space-x-1 shrink-0 ml-2">
+                        <button
+                          type="button"
+                          disabled={idx === 0}
+                          onClick={() => handleMoveBattingOrder(idx, 'up')}
+                          className="p-1 rounded-lg bg-[var(--color-surface)] border border-[var(--color-border)] disabled:opacity-30 hover:border-amber-500 cursor-pointer"
+                          title="Move Up Batting Order"
+                        >
+                          <ArrowUp className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={idx === orderedPlayingPlayers.length - 1}
+                          onClick={() => handleMoveBattingOrder(idx, 'down')}
+                          className="p-1 rounded-lg bg-[var(--color-surface)] border border-[var(--color-border)] disabled:opacity-30 hover:border-amber-500 cursor-pointer"
+                          title="Move Down Batting Order"
+                        >
+                          <ArrowDown className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setContractTypes((prev) => ({
+                              ...prev,
+                              [player.id]: is3Yr ? '1yr' : '3yr',
+                            }))
+                          }
+                          className={`px-1.5 py-1 rounded-lg text-[9px] font-mono font-black uppercase cursor-pointer ${
+                            is3Yr
+                              ? 'bg-amber-500 text-stone-950'
+                              : 'bg-[var(--color-surface)] text-[var(--color-text-dim)] border border-[var(--color-border)]'
+                          }`}
+                          title="Toggle 1-Year Rental vs 3-Year Lock"
+                        >
+                          {is3Yr ? '3YR' : '1YR'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handlePlayerTap(player.id)}
+                          className="p-1 rounded-lg text-rose-500 hover:bg-rose-500/20 text-[10px] font-bold cursor-pointer"
+                          title="Move to Bench"
+                        >
+                          ✕
+                        </button>
+                      </div>
                     </div>
                   );
                 })}
               </div>
             </div>
 
-            {/* Bench Reserves */}
             <div>
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-black font-display uppercase tracking-wider text-[var(--color-text-dim)] flex items-center space-x-1.5">
@@ -680,7 +751,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
                           {player.name} {impactPlayerId === player.id ? '⚡' : ''}
                         </span>
                       </div>
-                      <span className="text-[10px] font-bold text-emerald-500 shrink-0 ml-2">Swap</span>
+                      <span className="text-[10px] font-bold text-emerald-500 shrink-0 ml-2">+ Add</span>
                     </button>
                   ))}
                 </div>
@@ -701,7 +772,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
             className="w-full min-h-[48px] py-3 px-5 rounded-2xl bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white font-display text-xs font-bold uppercase tracking-wider transition cursor-pointer flex items-center justify-center space-x-2 shadow-lg"
           >
             <ShieldCheck className="w-4.5 h-4.5" />
-            <span>{submittingLineup ? 'Locking Squad...' : `Lock Starting ${targetPlayingCount} & Leadership`}</span>
+            <span>{submittingLineup ? 'Locking Batting Order...' : `Lock Batting Order (#1–#${targetPlayingCount})`}</span>
           </button>
         </div>
       )}
@@ -803,7 +874,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
         </div>
       )}
 
-      {/* TOURNAMENT PITCH CONDITION SELECTOR + AI POWER RANKINGS */}
+      {/* MULTI-SELECT PITCH & GROUND CONDITIONS + AI POWER RANKINGS */}
       <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-3xl p-5 sm:p-6 shadow-xl space-y-5">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center space-x-3">
@@ -815,7 +886,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
                 Tactical Power Rankings
               </h2>
               <p className="text-[11px] text-[var(--color-text-dim)] font-medium">
-                {targetPlayingCount}-Player Format · Venue Synergy & Leadership Engine
+                {targetPlayingCount}-Player Format · Avg. Batting & Bowling Projections
               </p>
             </div>
           </div>
@@ -832,32 +903,42 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
           )}
         </div>
 
-        {/* Venue / Pitch Archetype Synergy Selector */}
-        <div className="p-3 rounded-2xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)] space-y-2">
-          <span className="text-[10px] font-black uppercase tracking-wider text-[var(--color-text-dim)] flex items-center space-x-1">
-            <MapPin className="w-3 h-3 text-amber-500" />
-            <span>Tournament Venue & Pitch Condition:</span>
-          </span>
-          <div className="grid grid-cols-4 gap-1.5 text-[10px]">
-            {[
-              { id: 'balanced', label: '⚖️ Balanced' },
-              { id: 'spin', label: '🌀 Spin Track' },
-              { id: 'flat', label: '🚀 Flat Road' },
-              { id: 'seam', label: '⚡ Seam/Bounce' },
-            ].map((p) => (
-              <button
-                key={p.id}
-                type="button"
-                onClick={() => setSelectedPitch(p.id as PitchProfile)}
-                className={`py-1.5 px-2 rounded-xl font-bold border transition cursor-pointer ${
-                  selectedPitch === p.id
-                    ? 'bg-[var(--color-primary)] text-white border-[var(--color-primary)]'
-                    : 'bg-[var(--color-surface)] text-[var(--color-text-muted)] border-[var(--color-border)]'
-                }`}
-              >
-                {p.label}
-              </button>
-            ))}
+        {/* MULTI-SELECT VENUE & PITCH CONDITION TOGGLES (Choose 1, 2, or All) */}
+        <div className="p-3.5 rounded-2xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)] space-y-2.5">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-black uppercase tracking-wider text-[var(--color-text-dim)] flex items-center space-x-1">
+              <MapPin className="w-3.5 h-3.5 text-amber-500" />
+              <span>Pitch & Ground Conditions (Multi-Select):</span>
+            </span>
+            <span className="text-[9px] font-mono font-bold text-amber-500">
+              {selectedConditions.length} Selected
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 text-[10px]">
+            {PITCH_GROUND_OPTIONS.map((opt) => {
+              const isSelected = selectedConditions.includes(opt.id);
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => handleToggleCondition(opt.id)}
+                  className={`p-2 rounded-xl border text-left transition cursor-pointer flex items-center justify-between ${
+                    isSelected
+                      ? 'bg-[var(--color-primary)] text-white border-[var(--color-primary)] shadow-xs'
+                      : 'bg-[var(--color-surface)] text-[var(--color-text-muted)] border-[var(--color-border)] hover:border-[var(--color-border-hover)]'
+                  }`}
+                >
+                  <div>
+                    <div className="font-bold leading-tight">{opt.label}</div>
+                    <div className={`text-[9px] ${isSelected ? 'text-white/80' : 'text-[var(--color-text-dim)]'}`}>
+                      {opt.desc}
+                    </div>
+                  </div>
+                  {isSelected && <Check className="w-3.5 h-3.5 shrink-0 ml-1" />}
+                </button>
+              );
+            })}
           </div>
         </div>
 
@@ -908,6 +989,43 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
                         </div>
                       </div>
 
+                      {/* PROJECTED AVG. BATTING SCORE & AVG. BOWLING RUNS CONCEDED BAR */}
+                      {rep.projectedStats && (
+                        <div className="grid grid-cols-3 gap-2 pt-1 text-center font-mono">
+                          <div className="p-2 rounded-xl bg-emerald-500/10 border border-emerald-500/25">
+                            <span className="text-[8px] font-sans font-black uppercase text-emerald-500 block">
+                              Avg. Bat Score
+                            </span>
+                            <span className="text-xs font-black text-[var(--color-text-main)]">
+                              {rep.projectedStats.avgBattingScore}/{rep.projectedStats.avgBattingWickets}
+                            </span>
+                          </div>
+
+                          <div className="p-2 rounded-xl bg-purple-500/10 border border-purple-500/25">
+                            <span className="text-[8px] font-sans font-black uppercase text-purple-400 block">
+                              Avg. Bowl Conceded
+                            </span>
+                            <span className="text-xs font-black text-[var(--color-text-main)]">
+                              {rep.projectedStats.avgBowlingConceded}/{rep.projectedStats.avgBowlingWickets}
+                            </span>
+                          </div>
+
+                          <div className="p-2 rounded-xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)]">
+                            <span className="text-[8px] font-sans font-black uppercase text-[var(--color-text-dim)] block">
+                              Net Margin
+                            </span>
+                            <span
+                              className={`text-xs font-black ${
+                                rep.projectedStats.netRunDifferential >= 0 ? 'text-emerald-500' : 'text-rose-500'
+                              }`}
+                            >
+                              {rep.projectedStats.netRunDifferential >= 0 ? '+' : ''}
+                              {rep.projectedStats.netRunDifferential} runs
+                            </span>
+                          </div>
+                        </div>
+                      )}
+
                       <div className="w-full bg-[var(--color-surface-subtle)] h-1.5 rounded-full overflow-hidden border border-[var(--color-border)]">
                         <div
                           className="h-full rounded-full transition-all duration-700 bg-gradient-to-r from-emerald-500 via-amber-500 to-emerald-400"
@@ -927,6 +1045,10 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
 
                         <div className="grid grid-cols-2 gap-2 text-[11px]">
                           <div className="p-2.5 rounded-xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)]">
+                            <span className="text-[9px] text-[var(--color-text-dim)] uppercase font-bold block">Batting Order Fit</span>
+                            <span className="font-bold text-amber-500">{rep.playingBalance.battingOrderSynergy}</span>
+                          </div>
+                          <div className="p-2.5 rounded-xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)]">
                             <span className="text-[9px] text-[var(--color-text-dim)] uppercase font-bold block">Batting Depth</span>
                             <span className="font-bold text-[var(--color-text-main)]">{rep.playingBalance.battingDepth}</span>
                           </div>
@@ -938,16 +1060,12 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
                             <span className="text-[9px] text-[var(--color-text-dim)] uppercase font-bold block">Spin Quality</span>
                             <span className="font-bold text-[var(--color-text-main)]">{rep.playingBalance.spinQuality}</span>
                           </div>
-                          <div className="p-2.5 rounded-xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)]">
-                            <span className="text-[9px] text-[var(--color-text-dim)] uppercase font-bold block">Bench Depth</span>
-                            <span className="font-bold text-[var(--color-text-main)]">{rep.benchStrength}</span>
-                          </div>
                         </div>
 
                         {rep.archetypeBreakdown?.length > 0 && (
                           <div className="space-y-1.5">
                             <span className="text-[10px] font-black uppercase text-[var(--color-primary)] block">
-                              Squad Archetypes, Leadership & Contracts:
+                              Batting Order & Tactical Archetypes:
                             </span>
                             <div className="flex flex-wrap gap-1.5">
                               {rep.archetypeBreakdown.map((item, i) => (
@@ -968,6 +1086,17 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
                             <ul className="list-disc list-inside space-y-0.5 text-[11px] text-[var(--color-text-muted)]">
                               {rep.pros.map((pro, i) => (
                                 <li key={i}>{pro}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+
+                        {rep.cons?.length > 0 && (
+                          <div className="space-y-1">
+                            <span className="text-[10px] font-black uppercase text-rose-500 block">Tactical Vulnerabilities:</span>
+                            <ul className="list-disc list-inside space-y-0.5 text-[11px] text-[var(--color-text-muted)]">
+                              {rep.cons.map((con, i) => (
+                                <li key={i}>{con}</li>
                               ))}
                             </ul>
                           </div>
@@ -994,7 +1123,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
                 Mini-League Simulator
               </h2>
               <p className="text-[11px] text-[var(--color-text-dim)]">
-                {targetPlayingCount}-Player Format · {selectedPitch.toUpperCase()} Pitch Conditions
+                {targetPlayingCount}-Player Format · {selectedConditions.length} Active Ground Conditions
               </p>
             </div>
           </div>
@@ -1020,24 +1149,50 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
               <p className="text-[11px] text-[var(--color-text-muted)]">{simResult.finalMatchSummary}</p>
             </div>
 
-            <div className="grid grid-cols-2 gap-3 text-xs">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
               <div className="p-3 rounded-2xl bg-orange-500/10 border border-orange-500/30">
-                <span className="text-[9px] font-black uppercase text-orange-500 block">🧢 Orange Cap</span>
-                <span className="font-black text-sm text-[var(--color-text-main)] block mt-0.5">
+                <span className="text-[9px] font-black uppercase text-orange-500 block">🧢 Orange Cap (Consistency & Order)</span>
+                <span className="font-black text-sm text-[var(--color-text-main)] block mt-0.5 truncate">
                   {simResult.orangeCap.playerName}
                 </span>
-                <span className="text-[10px] text-[var(--color-text-muted)]">
-                  {simResult.orangeCap.runs} Runs (SR {simResult.orangeCap.strikeRate})
+                <span className="text-[10px] text-[var(--color-text-muted)] font-mono block">
+                  {simResult.orangeCap.runs} Runs · SR {simResult.orangeCap.strikeRate}
+                </span>
+                <span className="text-[9px] text-orange-400/90 block mt-0.5 truncate">
+                  {simResult.orangeCap.reason}
                 </span>
               </div>
 
               <div className="p-3 rounded-2xl bg-purple-500/10 border border-purple-500/30">
-                <span className="text-[9px] font-black uppercase text-purple-500 block">🧢 Purple Cap</span>
-                <span className="font-black text-sm text-[var(--color-text-main)] block mt-0.5">
+                <span className="text-[9px] font-black uppercase text-purple-500 block">🧢 Purple Cap (Phase Wicket-Taker)</span>
+                <span className="font-black text-sm text-[var(--color-text-main)] block mt-0.5 truncate">
                   {simResult.purpleCap.playerName}
                 </span>
-                <span className="text-[10px] text-[var(--color-text-muted)]">
-                  {simResult.purpleCap.wickets} Wkts (Econ {simResult.purpleCap.economy})
+                <span className="text-[10px] text-[var(--color-text-muted)] font-mono block">
+                  {simResult.purpleCap.wickets} Wkts · Econ {simResult.purpleCap.economy}
+                </span>
+                <span className="text-[9px] text-purple-400/90 block mt-0.5 truncate">
+                  {simResult.purpleCap.reason}
+                </span>
+              </div>
+
+              <div className="p-3 rounded-2xl bg-emerald-500/10 border border-emerald-500/30">
+                <span className="text-[9px] font-black uppercase text-emerald-500 block">⚡ Super Striker</span>
+                <span className="font-black text-sm text-[var(--color-text-main)] block mt-0.5 truncate">
+                  {simResult.superStriker?.playerName || simResult.orangeCap.playerName}
+                </span>
+                <span className="text-[10px] text-[var(--color-text-muted)] font-mono">
+                  SR {simResult.superStriker?.strikeRate || simResult.orangeCap.strikeRate} ({simResult.superStriker?.runs || simResult.orangeCap.runs} Runs)
+                </span>
+              </div>
+
+              <div className="p-3 rounded-2xl bg-amber-500/15 border border-amber-500/40">
+                <span className="text-[9px] font-black uppercase text-amber-500 block">🏅 Man of the Tournament (MVP)</span>
+                <span className="font-black text-sm text-[var(--color-text-main)] block mt-0.5 truncate">
+                  {simResult.manOfTournament?.playerName || simResult.orangeCap.playerName}
+                </span>
+                <span className="text-[10px] text-[var(--color-text-muted)] font-mono block">
+                  {simResult.manOfTournament?.mvpPoints || 0} MVP Pts · {simResult.manOfTournament?.summary}
                 </span>
               </div>
             </div>
