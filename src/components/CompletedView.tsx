@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
   Trophy,
-  Flame,
   RotateCcw,
   Sparkles,
   CheckCircle2,
@@ -13,7 +12,6 @@ import {
   Crown,
   Medal,
   AlertTriangle,
-  Users,
   Check,
   Layers,
   TrendingUp,
@@ -21,11 +19,12 @@ import {
   ShieldAlert,
   BarChart3,
   Award,
-  PlayCircle,
   Repeat,
   X,
   Send,
   Swords,
+  Star,
+  MapPin,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import {
@@ -38,7 +37,13 @@ import {
   respondTradeTransaction,
   TradeProposal,
 } from '../services/auctionService';
-import { PlayerRole, Team, Player } from '../game/auctionRules';
+import {
+  PlayerRole,
+  Team,
+  Player,
+  PitchProfile,
+  getDynamicRoleRequirements,
+} from '../game/auctionRules';
 import { sound } from '../services/soundService';
 import {
   generateMasterScoutReport,
@@ -68,8 +73,15 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
   const [expandedTeamId, setExpandedTeamId] = useState<string | null>(null);
   const [hasInitializedLineup, setHasInitializedLineup] = useState(false);
 
-  // Tournament Simulation State
+  // Pitch Condition & Tournament Simulation
+  const [selectedPitch, setSelectedPitch] = useState<PitchProfile>('balanced');
   const [simResult, setSimResult] = useState<TournamentSimulationResult | null>(null);
+
+  // Captain, Vice-Captain, Impact Sub & Contract Locks
+  const [captainId, setCaptainId] = useState<string>('');
+  const [viceCaptainId, setViceCaptainId] = useState<string>('');
+  const [impactPlayerId, setImpactPlayerId] = useState<string>('');
+  const [contractTypes, setContractTypes] = useState<Record<string, '1yr' | '3yr'>>({});
 
   // Trade Window States
   const [isTradeModalOpen, setIsTradeModalOpen] = useState(false);
@@ -81,7 +93,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
 
   const teamsList: Team[] = Array.isArray(room?.teams) ? room.teams : [];
   const minSquad = room?.settings?.minSquadSize || room?.settings?.squadSize || 11;
-  const targetPlayingCount = minSquad;
+  const { playingCount: targetPlayingCount, minBowlers } = getDynamicRoleRequirements(minSquad);
 
   const existingLineups = (room as any)?.lineups || {};
   const masterReport: MasterScoutReport | null = (room as any)?.masterScoutReport || null;
@@ -109,25 +121,27 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
 
   useEffect(() => {
     try {
-      confetti({
-        particleCount: 110,
-        spread: 85,
-        origin: { y: 0.5 },
-      });
+      confetti({ particleCount: 110, spread: 85, origin: { y: 0.5 } });
       sound.playFanfare();
-    } catch {
-      // Fallback
-    }
+    } catch {}
   }, []);
 
   useEffect(() => {
     if (!myTeam || !myTeam.players) return;
 
-    const savedForMyTeam = existingLineups[myTeam.id];
-    if (savedForMyTeam?.playingIds && savedForMyTeam.playingIds.length > 0) {
-      setSelectedPlayingIds(savedForMyTeam.playingIds);
+    const saved = existingLineups[myTeam.id];
+    if (saved?.playingIds && saved.playingIds.length > 0) {
+      setSelectedPlayingIds(saved.playingIds.slice(0, targetPlayingCount));
+      if (saved.captainId) setCaptainId(saved.captainId);
+      if (saved.viceCaptainId) setViceCaptainId(saved.viceCaptainId);
+      if (saved.impactPlayerId) setImpactPlayerId(saved.impactPlayerId);
+      if (saved.contractTypes) setContractTypes(saved.contractTypes);
     } else if (!hasInitializedLineup) {
-      setSelectedPlayingIds(myTeam.players.slice(0, targetPlayingCount).map((p) => p.id));
+      const initialXI = myTeam.players.slice(0, targetPlayingCount).map((p) => p.id);
+      setSelectedPlayingIds(initialXI);
+      if (initialXI[0]) setCaptainId(initialXI[0]);
+      if (initialXI[1]) setViceCaptainId(initialXI[1]);
+      if (myTeam.players[targetPlayingCount]) setImpactPlayerId(myTeam.players[targetPlayingCount].id);
       setHasInitializedLineup(true);
     }
   }, [myTeam?.id, myTeam?.players, existingLineups, hasInitializedLineup, targetPlayingCount]);
@@ -144,6 +158,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
       if (isAlreadyPlaying) {
         return prev.filter((id) => id !== playerId);
       }
+      if (impactPlayerId === playerId) setImpactPlayerId('');
       if (prev.length < targetPlayingCount) {
         return [...prev, playerId];
       }
@@ -160,7 +175,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
     }
 
     const benchIds = myTeam.players
-      .filter((p) => !selectedPlayingIds.includes(p.id))
+      .filter((p) => !selectedPlayingIds.includes(p.id) && p.id !== impactPlayerId)
       .map((p) => p.id);
 
     setSubmittingLineup(true);
@@ -169,7 +184,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
     setSubmittingLineup(false);
 
     if (res.success) {
-      setLineupSuccessMsg('Lineup locked & broadcasted to tournament scout!');
+      setLineupSuccessMsg(`Starting ${targetPlayingCount} + Impact Sub & Leadership locked!`);
       setTimeout(() => setLineupSuccessMsg(''), 4500);
     } else {
       alert(res.error || 'Failed to submit lineup');
@@ -181,7 +196,6 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
       alert('Please select both a player to offer and a player to request.');
       return;
     }
-
     const targetTeam = teamsList.find((t) => t.id === targetTeamId);
     if (!targetTeam) return;
 
@@ -200,7 +214,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
       setMyPlayerToOffer(null);
       setTargetPlayerToAsk(null);
       setTargetTeamId('');
-      alert(`Trade offer sent to ${targetTeam.name}! Waiting for their acceptance.`);
+      alert(`Trade offer sent to ${targetTeam.name}!`);
     } else {
       alert(res.error || 'Failed to send trade proposal.');
     }
@@ -211,17 +225,31 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
     setTradeActionLoading(tradeId);
     const res = await respondTradeTransaction(room.code, tradeId, accept);
     setTradeActionLoading(null);
-
-    if (!res.success) {
-      alert(res.error || 'Failed to process trade.');
-    }
+    if (!res.success) alert(res.error || 'Failed to process trade.');
   };
 
   const handleGenerateScoutReport = async () => {
     if (!room?.code) return;
     setAnalyzing(true);
     try {
-      const report = await generateMasterScoutReport(teamsList, existingLineups, minSquad);
+      const mergedLineups = {
+        ...existingLineups,
+        ...(myTeam
+          ? {
+              [myTeam.id]: {
+                playingIds: selectedPlayingIds,
+                benchIds: myTeam.players
+                  .filter((p) => !selectedPlayingIds.includes(p.id))
+                  .map((p) => p.id),
+                impactPlayerId,
+                captainId,
+                viceCaptainId,
+                contractTypes,
+              },
+            }
+          : {}),
+      };
+      const report = await generateMasterScoutReport(teamsList, mergedLineups, minSquad, selectedPitch);
       await saveMasterScoutReport(room.code, report);
     } catch (err: any) {
       alert('Analysis Error: ' + (err?.message || err));
@@ -235,14 +263,27 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
       alert('Need at least 2 teams to simulate a tournament.');
       return;
     }
-    const result = simulateMiniTournament(teamsList, existingLineups, minSquad);
+    const mergedLineups = {
+      ...existingLineups,
+      ...(myTeam
+        ? {
+            [myTeam.id]: {
+              playingIds: selectedPlayingIds,
+              benchIds: [],
+              impactPlayerId,
+              captainId,
+              viceCaptainId,
+              contractTypes,
+            },
+          }
+        : {}),
+    };
+    const result = simulateMiniTournament(teamsList, mergedLineups, minSquad, selectedPitch);
     setSimResult(result);
     sound.playFanfare();
     try {
       confetti({ particleCount: 90, spread: 70, origin: { y: 0.6 } });
-    } catch {
-      // Ignore
-    }
+    } catch {}
   };
 
   const handleReAuctionUnsold = async () => {
@@ -254,21 +295,19 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
     const nextRound = (room.round || 1) + 1;
     if (
       confirm(
-        `Start Round ${nextRound} with ${unsoldPlayers.length} unsold player(s)? Existing squads and remaining team budgets are fully preserved.`
+        `Start Round ${nextRound} with ${unsoldPlayers.length} unsold player(s)? Existing squads and remaining team budgets are preserved.`
       )
     ) {
       setReAuctioning(true);
       const res = await reAuctionUnsoldTransaction(room.code, hostToken);
       setReAuctioning(false);
-      if (!res.success) {
-        alert(res.error || 'Failed to start re-auction.');
-      }
+      if (!res.success) alert(res.error || 'Failed to start re-auction.');
     }
   };
 
   const handleResetAuction = async () => {
     if (!isHost || !room?.code) return;
-    if (confirm('Start a brand new auction? This resets budgets and squad rosters back to lobby while keeping team claims intact.')) {
+    if (confirm('Start a brand new auction? This resets budgets and squad rosters back to lobby.')) {
       setResetting(true);
       await resetAuctionTransaction(room.code, hostToken);
       setResetting(false);
@@ -305,20 +344,20 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
     }
     if (rank === 2) {
       return (
-        <div className="w-9 h-9 rounded-2xl bg-gradient-to-tr from-slate-400 to-slate-200 text-stone-950 flex items-center justify-center shadow-md shadow-slate-400/20 ring-1 ring-slate-300">
+        <div className="w-9 h-9 rounded-2xl bg-gradient-to-tr from-slate-400 to-slate-200 text-stone-950 flex items-center justify-center shadow-md">
           <Medal className="w-5 h-5 fill-stone-950" />
         </div>
       );
     }
     if (rank === 3) {
       return (
-        <div className="w-9 h-9 rounded-2xl bg-gradient-to-tr from-amber-700 to-amber-600 text-white flex items-center justify-center shadow-md shadow-amber-800/20 ring-1 ring-amber-500">
+        <div className="w-9 h-9 rounded-2xl bg-gradient-to-tr from-amber-700 to-amber-600 text-white flex items-center justify-center shadow-md">
           <Medal className="w-5 h-5 fill-white" />
         </div>
       );
     }
     return (
-      <div className="w-9 h-9 rounded-2xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)] flex items-center justify-center font-display font-black text-xs text-[var(--color-text-dim)] shadow-inner">
+      <div className="w-9 h-9 rounded-2xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)] flex items-center justify-center font-display font-black text-xs text-[var(--color-text-dim)]">
         #{rank}
       </div>
     );
@@ -345,21 +384,21 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
 
         <span className="text-[10px] font-black tracking-widest uppercase px-3 py-1 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/25 inline-flex items-center space-x-1 mb-2 shadow-xs">
           <Sparkles className="w-3 h-3 text-amber-400" />
-          <span>Official Broadcast Dashboard</span>
+          <span>{targetPlayingCount}-Player Format · Official Podium</span>
         </span>
 
         <h1 className="text-3xl sm:text-4xl font-black font-display uppercase tracking-wider text-[var(--color-text-main)]">
           Auction Concluded
         </h1>
         <p className="text-xs text-[var(--color-text-muted)] max-w-sm mx-auto mt-1.5 leading-relaxed">
-          Franchise budgets are locked. Trade players with mutual acceptance, lock starting lineups, and simulate the tournament.
+          Select your Starting {targetPlayingCount}, assign Captain/VC & Impact Sub, pick pitch conditions, and simulate the league.
         </p>
 
         {onOpenSummary && (
           <div className="mt-5">
             <button
               onClick={onOpenSummary}
-              className="px-4.5 py-2.5 bg-[var(--color-surface-subtle)] hover:bg-[var(--color-surface-elevated)] border border-[var(--color-border)] hover:border-[var(--color-border-hover)] text-[var(--color-text-main)] font-display text-xs font-bold uppercase tracking-wider rounded-2xl transition cursor-pointer shadow-xs inline-flex items-center space-x-2 active:scale-95"
+              className="px-4.5 py-2.5 bg-[var(--color-surface-subtle)] hover:bg-[var(--color-surface-elevated)] border border-[var(--color-border)] text-[var(--color-text-main)] font-display text-xs font-bold uppercase tracking-wider rounded-2xl transition cursor-pointer shadow-xs inline-flex items-center space-x-2 active:scale-95"
             >
               <BarChart3 className="w-4 h-4 text-[var(--color-primary)]" />
               <span>Open Ledger & Detailed Summary</span>
@@ -415,7 +454,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
                   type="button"
                   disabled={tradeActionLoading === trade.id}
                   onClick={() => handleRespondToTrade(trade.id, true)}
-                  className="flex-1 py-2 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-display text-xs font-bold uppercase tracking-wider transition cursor-pointer shadow-md active:scale-95 flex items-center justify-center space-x-1.5"
+                  className="flex-1 py-2 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-display text-xs font-bold uppercase tracking-wider transition cursor-pointer shadow-md flex items-center justify-center space-x-1.5"
                 >
                   <Check className="w-4 h-4" />
                   <span>{tradeActionLoading === trade.id ? 'Accepting...' : 'Accept Trade'}</span>
@@ -424,7 +463,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
                   type="button"
                   disabled={tradeActionLoading === trade.id}
                   onClick={() => handleRespondToTrade(trade.id, false)}
-                  className="py-2 px-4 rounded-xl bg-[var(--color-surface-subtle)] hover:bg-rose-500/20 text-rose-500 border border-rose-500/30 font-display text-xs font-bold uppercase tracking-wider transition cursor-pointer active:scale-95"
+                  className="py-2 px-4 rounded-xl bg-[var(--color-surface-subtle)] hover:bg-rose-500/20 text-rose-500 border border-rose-500/30 font-display text-xs font-bold uppercase tracking-wider transition cursor-pointer"
                 >
                   Decline
                 </button>
@@ -434,36 +473,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
         </div>
       )}
 
-      {/* OUTGOING PENDING TRADES */}
-      {outgoingTrades.length > 0 && (
-        <div className="space-y-2">
-          {outgoingTrades.map((trade) => (
-            <div
-              key={trade.id}
-              className="p-3 bg-[var(--color-surface-subtle)] border border-[var(--color-border)] rounded-2xl flex items-center justify-between text-xs"
-            >
-              <div className="flex items-center space-x-2">
-                <RefreshCw className="w-3.5 h-3.5 text-amber-500 animate-spin" />
-                <span className="text-[var(--color-text-muted)] font-medium">
-                  Trade offer to <span className="font-bold text-[var(--color-text-main)]">{trade.receiverTeamName}</span> pending:
-                </span>
-                <span className="font-bold text-[var(--color-text-main)]">
-                  {trade.senderPlayer.name} ⇄ {trade.receiverPlayer.name}
-                </span>
-              </div>
-              <button
-                type="button"
-                onClick={() => handleRespondToTrade(trade.id, false)}
-                className="text-[10px] font-bold text-rose-500 hover:underline cursor-pointer"
-              >
-                Cancel
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* OWNER TACTICAL LINEUP STUDIO */}
+      {/* OWNER DYNAMIC SQUAD STUDIO (Starting N + Impact Sub + C/VC + 3-Yr Contracts) */}
       {myTeam && (
         <div className="bg-[var(--color-surface)] border-2 border-[var(--color-primary)]/50 rounded-3xl p-5 sm:p-6 shadow-xl space-y-4">
           <div className="flex items-center justify-between border-b border-[var(--color-border)] pb-3.5">
@@ -473,7 +483,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
               </div>
               <div>
                 <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--color-primary)] block leading-none">
-                  Owner Squad Studio
+                  Front Office Studio
                 </span>
                 <h2 className="text-base font-black font-display uppercase text-[var(--color-text-main)]">
                   {myTeam.name}
@@ -485,16 +495,16 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
               <button
                 type="button"
                 onClick={() => setIsTradeModalOpen(true)}
-                className="text-[10px] font-black font-display uppercase tracking-wider px-3 py-1.5 rounded-xl bg-blue-500/15 hover:bg-blue-500/25 text-blue-600 dark:text-blue-400 border border-blue-500/30 transition cursor-pointer flex items-center space-x-1.5 active:scale-95 shadow-xs"
+                className="text-[10px] font-black font-display uppercase tracking-wider px-3 py-1.5 rounded-xl bg-blue-500/15 hover:bg-blue-500/25 text-blue-600 dark:text-blue-400 border border-blue-500/30 transition cursor-pointer flex items-center space-x-1.5"
               >
                 <Repeat className="w-3.5 h-3.5" />
                 <span>Trade</span>
               </button>
 
               <span
-                className={`font-mono text-xs font-black px-3 py-1 rounded-full border transition-all ${
+                className={`font-mono text-xs font-black px-3 py-1 rounded-full border ${
                   selectedPlayingIds.length === targetPlayingCount
-                    ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/40 shadow-xs'
+                    ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/40'
                     : 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/40'
                 }`}
               >
@@ -503,98 +513,174 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
             </div>
           </div>
 
+          {/* Dynamic Role Breakdown */}
           <div className="grid grid-cols-4 gap-2 p-2.5 rounded-2xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)] text-center text-[10px]">
-            <div className="p-1.5 rounded-xl bg-[var(--color-surface)] shadow-xs">
+            <div className="p-1.5 rounded-xl bg-[var(--color-surface)]">
               <span className="text-[var(--color-text-dim)] block text-[9px] uppercase font-bold">WK</span>
               <span className={`font-mono font-black ${myWkCount >= 1 ? 'text-emerald-500' : 'text-rose-500'}`}>
                 {myWkCount} {myWkCount >= 1 ? '✓' : '⚠️'}
               </span>
             </div>
-            <div className="p-1.5 rounded-xl bg-[var(--color-surface)] shadow-xs">
+            <div className="p-1.5 rounded-xl bg-[var(--color-surface)]">
               <span className="text-[var(--color-text-dim)] block text-[9px] uppercase font-bold">BAT</span>
               <span className="font-mono font-black text-[var(--color-text-main)]">{myBatCount}</span>
             </div>
-            <div className="p-1.5 rounded-xl bg-[var(--color-surface)] shadow-xs">
+            <div className="p-1.5 rounded-xl bg-[var(--color-surface)]">
               <span className="text-[var(--color-text-dim)] block text-[9px] uppercase font-bold">AR</span>
               <span className="font-mono font-black text-[var(--color-text-main)]">{myArCount}</span>
             </div>
-            <div className="p-1.5 rounded-xl bg-[var(--color-surface)] shadow-xs">
+            <div className="p-1.5 rounded-xl bg-[var(--color-surface)]">
               <span className="text-[var(--color-text-dim)] block text-[9px] uppercase font-bold">BOWLERS</span>
-              <span className={`font-mono font-black ${myTotalBowlers >= 5 ? 'text-emerald-500' : 'text-amber-500'}`}>
-                {myTotalBowlers} {myTotalBowlers >= 6 ? '(6th Armed)' : myTotalBowlers === 5 ? '(5 Bowlers)' : '⚠️ Short'}
+              <span className={`font-mono font-black ${myTotalBowlers >= minBowlers ? 'text-emerald-500' : 'text-amber-500'}`}>
+                {myTotalBowlers} ({minBowlers}+ Req)
               </span>
             </div>
           </div>
 
+          {/* Captain, Vice-Captain & Impact Player Selectors */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+            <div>
+              <label className="text-[9px] font-black uppercase text-amber-500 block mb-1">
+                👑 Captain (1.5x Composure)
+              </label>
+              <select
+                value={captainId}
+                onChange={(e) => setCaptainId(e.target.value)}
+                className="w-full p-2 rounded-xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)] text-[11px] font-bold text-[var(--color-text-main)]"
+              >
+                <option value="">-- Captain --</option>
+                {myPlayingPlayers.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({p.role})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="text-[9px] font-black uppercase text-blue-500 block mb-1">
+                ⭐ Vice-Captain (1.25x)
+              </label>
+              <select
+                value={viceCaptainId}
+                onChange={(e) => setViceCaptainId(e.target.value)}
+                className="w-full p-2 rounded-xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)] text-[11px] font-bold text-[var(--color-text-main)]"
+              >
+                <option value="">-- Vice-Captain --</option>
+                {myPlayingPlayers
+                  .filter((p) => p.id !== captainId)
+                  .map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name} ({p.role})
+                    </option>
+                  ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="text-[9px] font-black uppercase text-emerald-500 block mb-1">
+                ⚡ Impact Player Sub
+              </label>
+              <select
+                value={impactPlayerId}
+                onChange={(e) => setImpactPlayerId(e.target.value)}
+                className="w-full p-2 rounded-xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)] text-[11px] font-bold text-[var(--color-text-main)]"
+              >
+                <option value="">-- Impact Sub --</option>
+                {myBenchPlayers.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({p.role})
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* Starting Lineup (Dynamic Count = targetPlayingCount) */}
           <div className="space-y-4">
             <div>
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-black font-display uppercase tracking-wider text-emerald-600 dark:text-emerald-400 flex items-center space-x-1.5">
                   <CheckCircle2 className="w-4 h-4" />
-                  <span>Starting Lineup ({myPlayingPlayers.length})</span>
+                  <span>Starting {targetPlayingCount} ({myPlayingPlayers.length})</span>
                 </span>
-                <span className="text-[10px] text-[var(--color-text-dim)] font-medium">Tap to bench</span>
+                <span className="text-[10px] text-[var(--color-text-dim)]">Tap player to bench · Toggle 1Yr/3Yr</span>
               </div>
 
-              {myPlayingPlayers.length === 0 ? (
-                <div className="p-4 text-center border border-dashed border-[var(--color-border)] rounded-2xl text-xs text-[var(--color-text-dim)]">
-                  No starting players selected. Tap bench players below to promote them.
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-52 overflow-y-auto pr-1">
-                  {myPlayingPlayers.map((player) => (
-                    <button
-                      type="button"
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-56 overflow-y-auto pr-1">
+                {myPlayingPlayers.map((player) => {
+                  const is3Yr = contractTypes[player.id] === '3yr';
+                  return (
+                    <div
                       key={player.id}
-                      onClick={() => handlePlayerTap(player.id)}
-                      className="w-full p-2.5 rounded-2xl border border-emerald-500/40 bg-emerald-500/10 hover:bg-emerald-500/20 active:scale-95 transition cursor-pointer flex items-center justify-between text-xs text-left shadow-xs"
+                      className="p-2 rounded-2xl border border-emerald-500/40 bg-emerald-500/10 flex items-center justify-between text-xs"
                     >
-                      <div className="flex items-center space-x-2 truncate pointer-events-none">
+                      <button
+                        type="button"
+                        onClick={() => handlePlayerTap(player.id)}
+                        className="flex items-center space-x-1.5 truncate text-left flex-1 cursor-pointer"
+                      >
                         <span className={`text-[9px] font-black px-1.5 py-0.5 rounded border uppercase ${getRoleBadgeStyle(player.role)}`}>
                           {player.role}
                         </span>
                         <span className="font-bold text-[var(--color-text-main)] truncate">{player.name}</span>
-                      </div>
-                      <span className="text-[10px] font-bold text-rose-500 shrink-0 ml-2">Bench ✕</span>
-                    </button>
-                  ))}
-                </div>
-              )}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setContractTypes((prev) => ({
+                            ...prev,
+                            [player.id]: is3Yr ? '1yr' : '3yr',
+                          }))
+                        }
+                        className={`ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-mono font-black uppercase cursor-pointer ${
+                          is3Yr
+                            ? 'bg-amber-500 text-stone-950'
+                            : 'bg-[var(--color-surface)] text-[var(--color-text-dim)]'
+                        }`}
+                        title="Toggle 1-Year Rental vs 3-Year Franchise Lock"
+                      >
+                        {is3Yr ? '3YR' : '1YR'}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
 
+            {/* Bench Reserves */}
             <div>
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-black font-display uppercase tracking-wider text-[var(--color-text-dim)] flex items-center space-x-1.5">
                   <Layers className="w-4 h-4" />
-                  <span>Tactical Bench Reserves ({myBenchPlayers.length})</span>
+                  <span>Bench & Reserves ({myBenchPlayers.length})</span>
                 </span>
-                <span className="text-[10px] text-[var(--color-text-dim)] font-medium">Tap to swap</span>
               </div>
 
               {myBenchPlayers.length === 0 ? (
-                <div className="p-3 text-center bg-rose-500/10 border border-rose-500/25 rounded-2xl text-[11px] text-rose-600 dark:text-rose-400 font-semibold flex items-center justify-center space-x-2">
-                  <ShieldAlert className="w-4 h-4 text-rose-500" />
-                  <span>Zero bench depth! The AI scout will deduct points.</span>
+                <div className="p-3 text-center bg-rose-500/10 border border-rose-500/25 rounded-2xl text-[11px] text-rose-500 font-semibold flex items-center justify-center space-x-2">
+                  <ShieldAlert className="w-4 h-4" />
+                  <span>Zero bench reserves!</span>
                 </div>
               ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-44 overflow-y-auto pr-1">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-40 overflow-y-auto pr-1">
                   {myBenchPlayers.map((player) => (
                     <button
                       type="button"
                       key={player.id}
                       onClick={() => handlePlayerTap(player.id)}
-                      className="w-full p-2.5 rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface-subtle)] hover:border-[var(--color-primary)] active:scale-95 transition cursor-pointer flex items-center justify-between text-xs text-left opacity-80 hover:opacity-100 shadow-xs"
+                      className="w-full p-2.5 rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface-subtle)] hover:border-[var(--color-primary)] transition cursor-pointer flex items-center justify-between text-xs text-left"
                     >
-                      <div className="flex items-center space-x-2 truncate pointer-events-none">
+                      <div className="flex items-center space-x-2 truncate">
                         <span className={`text-[9px] font-black px-1.5 py-0.5 rounded border uppercase ${getRoleBadgeStyle(player.role)}`}>
                           {player.role}
                         </span>
-                        <span className="font-medium text-[var(--color-text-muted)] truncate">{player.name}</span>
+                        <span className="font-medium text-[var(--color-text-muted)] truncate">
+                          {player.name} {impactPlayerId === player.id ? '⚡' : ''}
+                        </span>
                       </div>
-                      <span className="text-[10px] font-bold text-emerald-500 shrink-0 ml-2 flex items-center space-x-0.5">
-                        <ArrowDownUp className="w-3 h-3 inline" />
-                        <span>Swap</span>
-                      </span>
+                      <span className="text-[10px] font-bold text-emerald-500 shrink-0 ml-2">Swap</span>
                     </button>
                   ))}
                 </div>
@@ -603,9 +689,8 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
           </div>
 
           {lineupSuccessMsg && (
-            <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 text-xs font-bold rounded-2xl text-center flex items-center justify-center space-x-2 animate-bounce">
-              <Check className="w-4 h-4" />
-              <span>{lineupSuccessMsg}</span>
+            <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 text-emerald-500 text-xs font-bold rounded-2xl text-center">
+              {lineupSuccessMsg}
             </div>
           )}
 
@@ -613,31 +698,26 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
             type="button"
             disabled={submittingLineup}
             onClick={handleSaveLineup}
-            className="w-full min-h-[48px] py-3 px-5 rounded-2xl bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white font-display text-xs font-bold uppercase tracking-wider transition cursor-pointer flex items-center justify-center space-x-2 shadow-lg active:scale-98"
+            className="w-full min-h-[48px] py-3 px-5 rounded-2xl bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white font-display text-xs font-bold uppercase tracking-wider transition cursor-pointer flex items-center justify-center space-x-2 shadow-lg"
           >
             <ShieldCheck className="w-4.5 h-4.5" />
-            <span>{submittingLineup ? 'Locking Squad Lineup...' : 'Lock & Save My Tactical Squad'}</span>
+            <span>{submittingLineup ? 'Locking Squad...' : `Lock Starting ${targetPlayingCount} & Leadership`}</span>
           </button>
         </div>
       )}
 
-      {/* MUTUAL PLAYER TRADE MODAL */}
+      {/* TRADE MODAL */}
       {isTradeModalOpen && myTeam && (
         <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-3xl max-w-md w-full p-5 sm:p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between border-b border-[var(--color-border)] pb-3">
-              <div className="flex items-center space-x-2">
-                <div className="w-8 h-8 rounded-xl bg-blue-500/15 text-blue-500 flex items-center justify-center">
-                  <Repeat className="w-4 h-4" />
-                </div>
-                <h3 className="font-display font-black text-sm uppercase text-[var(--color-text-main)]">
-                  Propose Franchise Trade
-                </h3>
-              </div>
+              <h3 className="font-display font-black text-sm uppercase text-[var(--color-text-main)]">
+                Propose Franchise Trade
+              </h3>
               <button
                 type="button"
                 onClick={() => setIsTradeModalOpen(false)}
-                className="p-1 rounded-lg hover:bg-[var(--color-surface-subtle)] text-[var(--color-text-dim)]"
+                className="p-1 rounded-lg hover:bg-[var(--color-surface-subtle)]"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -645,35 +725,29 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
 
             <div>
               <label className="text-[10px] font-black uppercase text-[var(--color-text-dim)] block mb-1.5">
-                Step 1: Choose player you want to trade away
+                Step 1: Player to trade away
               </label>
               <div className="grid grid-cols-2 gap-1.5 max-h-36 overflow-y-auto p-1 bg-[var(--color-surface-subtle)] rounded-xl border border-[var(--color-border)]">
-                {myTeam.players.map((p) => {
-                  const isSelected = myPlayerToOffer?.id === p.id;
-                  return (
-                    <button
-                      type="button"
-                      key={p.id}
-                      onClick={() => setMyPlayerToOffer(p)}
-                      className={`p-2 rounded-lg text-left text-xs transition cursor-pointer border truncate ${
-                        isSelected
-                          ? 'border-blue-500 bg-blue-500/20 font-bold text-blue-500'
-                          : 'border-transparent hover:bg-[var(--color-surface)] text-[var(--color-text-main)]'
-                      }`}
-                    >
-                      <span className={`text-[8px] font-black px-1 py-0.5 rounded mr-1.5 ${getRoleBadgeStyle(p.role)}`}>
-                        {p.role}
-                      </span>
-                      {p.name}
-                    </button>
-                  );
-                })}
+                {myTeam.players.map((p) => (
+                  <button
+                    type="button"
+                    key={p.id}
+                    onClick={() => setMyPlayerToOffer(p)}
+                    className={`p-2 rounded-lg text-left text-xs cursor-pointer border truncate ${
+                      myPlayerToOffer?.id === p.id
+                        ? 'border-blue-500 bg-blue-500/20 font-bold text-blue-500'
+                        : 'border-transparent text-[var(--color-text-main)]'
+                    }`}
+                  >
+                    {p.name} ({p.role})
+                  </button>
+                ))}
               </div>
             </div>
 
             <div>
               <label className="text-[10px] font-black uppercase text-[var(--color-text-dim)] block mb-1.5">
-                Step 2: Select franchise to trade with
+                Step 2: Franchise
               </label>
               <select
                 value={targetTeamId}
@@ -681,12 +755,12 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
                   setTargetTeamId(e.target.value);
                   setTargetPlayerToAsk(null);
                 }}
-                className="w-full p-2.5 rounded-xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)] text-xs text-[var(--color-text-main)] font-semibold"
+                className="w-full p-2.5 rounded-xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)] text-xs text-[var(--color-text-main)]"
               >
                 <option value="">-- Choose Franchise --</option>
                 {otherTeams.map((t) => (
                   <option key={t.id} value={t.id}>
-                    {t.name} ({t.players.length} players)
+                    {t.name}
                   </option>
                 ))}
               </select>
@@ -695,62 +769,43 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
             {selectedOtherTeam && (
               <div>
                 <label className="text-[10px] font-black uppercase text-[var(--color-text-dim)] block mb-1.5">
-                  Step 3: Select player you want in return
+                  Step 3: Player requested
                 </label>
-                {selectedOtherTeam.players.length === 0 ? (
-                  <p className="text-xs text-[var(--color-text-dim)] italic">This team has no players to trade.</p>
-                ) : (
-                  <div className="grid grid-cols-2 gap-1.5 max-h-36 overflow-y-auto p-1 bg-[var(--color-surface-subtle)] rounded-xl border border-[var(--color-border)]">
-                    {selectedOtherTeam.players.map((p) => {
-                      const isSelected = targetPlayerToAsk?.id === p.id;
-                      return (
-                        <button
-                          type="button"
-                          key={p.id}
-                          onClick={() => setTargetPlayerToAsk(p)}
-                          className={`p-2 rounded-lg text-left text-xs transition cursor-pointer border truncate ${
-                            isSelected
-                              ? 'border-emerald-500 bg-emerald-500/20 font-bold text-emerald-500'
-                              : 'border-transparent hover:bg-[var(--color-surface)] text-[var(--color-text-main)]'
-                          }`}
-                        >
-                          <span className={`text-[8px] font-black px-1 py-0.5 rounded mr-1.5 ${getRoleBadgeStyle(p.role)}`}>
-                            {p.role}
-                          </span>
-                          {p.name}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
+                <div className="grid grid-cols-2 gap-1.5 max-h-36 overflow-y-auto p-1 bg-[var(--color-surface-subtle)] rounded-xl border border-[var(--color-border)]">
+                  {selectedOtherTeam.players.map((p) => (
+                    <button
+                      type="button"
+                      key={p.id}
+                      onClick={() => setTargetPlayerToAsk(p)}
+                      className={`p-2 rounded-lg text-left text-xs cursor-pointer border truncate ${
+                        targetPlayerToAsk?.id === p.id
+                          ? 'border-emerald-500 bg-emerald-500/20 font-bold text-emerald-500'
+                          : 'border-transparent text-[var(--color-text-main)]'
+                      }`}
+                    >
+                      {p.name} ({p.role})
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
 
-            <div className="pt-2 border-t border-[var(--color-border)]">
-              {myPlayerToOffer && targetPlayerToAsk && (
-                <div className="mb-3 p-2.5 rounded-xl bg-blue-500/10 border border-blue-500/30 text-xs text-center">
-                  Trade <span className="font-bold text-rose-500">{myPlayerToOffer.name}</span> for{' '}
-                  <span className="font-bold text-emerald-500">{targetPlayerToAsk.name}</span>
-                </div>
-              )}
-
-              <button
-                type="button"
-                disabled={isProposingTrade || !myPlayerToOffer || !targetPlayerToAsk}
-                onClick={handleSendTradeProposal}
-                className="w-full py-2.5 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-display text-xs font-bold uppercase tracking-wider transition cursor-pointer shadow-md flex items-center justify-center space-x-1.5 active:scale-95"
-              >
-                <Send className="w-3.5 h-3.5" />
-                <span>{isProposingTrade ? 'Transmitting Proposal...' : 'Send Mutual Trade Offer'}</span>
-              </button>
-            </div>
+            <button
+              type="button"
+              disabled={isProposingTrade || !myPlayerToOffer || !targetPlayerToAsk}
+              onClick={handleSendTradeProposal}
+              className="w-full py-2.5 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-display text-xs font-bold uppercase tracking-wider cursor-pointer flex items-center justify-center space-x-1.5"
+            >
+              <Send className="w-3.5 h-3.5" />
+              <span>{isProposingTrade ? 'Sending...' : 'Send Trade Offer'}</span>
+            </button>
           </div>
         </div>
       )}
 
-      {/* MASTER AI PRIME-FORM POWER RANKINGS (1 TO N) */}
+      {/* TOURNAMENT PITCH CONDITION SELECTOR + AI POWER RANKINGS */}
       <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-3xl p-5 sm:p-6 shadow-xl space-y-5">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center space-x-3">
             <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-amber-500 to-emerald-500 text-white flex items-center justify-center shadow-md">
               <Sparkles className="w-5 h-5 text-amber-200" />
@@ -760,7 +815,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
                 Tactical Power Rankings
               </h2>
               <p className="text-[11px] text-[var(--color-text-dim)] font-medium">
-                9-Vector T20 Archetype, Phase & Bench Depth Analysis
+                {targetPlayingCount}-Player Format · Venue Synergy & Leadership Engine
               </p>
             </div>
           </div>
@@ -769,7 +824,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
             <button
               onClick={handleGenerateScoutReport}
               disabled={analyzing}
-              className="text-[10px] font-bold font-display uppercase tracking-wider px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white transition cursor-pointer flex items-center space-x-1.5 shadow-md active:scale-95"
+              className="text-[10px] font-bold font-display uppercase tracking-wider px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white transition cursor-pointer flex items-center space-x-1.5 shadow-md"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${analyzing ? 'animate-spin' : ''}`} />
               <span>{analyzing ? 'Analyzing...' : masterReport ? 'Re-Analyze' : 'Analyze Teams'}</span>
@@ -777,14 +832,34 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
           )}
         </div>
 
-        {analyzing && (
-          <div className="py-10 text-center space-y-3">
-            <div className="w-9 h-9 border-3 border-emerald-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
-            <p className="text-xs text-[var(--color-text-muted)] font-display uppercase tracking-wider font-bold">
-              Evaluating boundary ceiling, stability anchors, phase bowling & bench depth...
-            </p>
+        {/* Venue / Pitch Archetype Synergy Selector */}
+        <div className="p-3 rounded-2xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)] space-y-2">
+          <span className="text-[10px] font-black uppercase tracking-wider text-[var(--color-text-dim)] flex items-center space-x-1">
+            <MapPin className="w-3 h-3 text-amber-500" />
+            <span>Tournament Venue & Pitch Condition:</span>
+          </span>
+          <div className="grid grid-cols-4 gap-1.5 text-[10px]">
+            {[
+              { id: 'balanced', label: '⚖️ Balanced' },
+              { id: 'spin', label: '🌀 Spin Track' },
+              { id: 'flat', label: '🚀 Flat Road' },
+              { id: 'seam', label: '⚡ Seam/Bounce' },
+            ].map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => setSelectedPitch(p.id as PitchProfile)}
+                className={`py-1.5 px-2 rounded-xl font-bold border transition cursor-pointer ${
+                  selectedPitch === p.id
+                    ? 'bg-[var(--color-primary)] text-white border-[var(--color-primary)]'
+                    : 'bg-[var(--color-surface)] text-[var(--color-text-muted)] border-[var(--color-border)]'
+                }`}
+              >
+                {p.label}
+              </button>
+            ))}
           </div>
-        )}
+        </div>
 
         {!analyzing && masterReport && (
           <div className="space-y-4">
@@ -804,7 +879,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
                     className={`border rounded-2xl overflow-hidden transition-all duration-300 ${
                       isExpanded
                         ? 'border-[var(--color-primary)] bg-[var(--color-surface-elevated)] shadow-xl'
-                        : 'border-[var(--color-border)] bg-[var(--color-surface)] hover:border-[var(--color-border-hover)]'
+                        : 'border-[var(--color-border)] bg-[var(--color-surface)]'
                     }`}
                   >
                     <div
@@ -825,17 +900,17 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
                         </div>
 
                         <div className="flex items-center space-x-3">
-                          <div className={`font-mono font-black text-sm px-3 py-1 rounded-full border shadow-xs ${getScoreColor(rep.scoreOutOf10)}`}>
+                          <div className={`font-mono font-black text-sm px-3 py-1 rounded-full border ${getScoreColor(rep.scoreOutOf10)}`}>
                             {rep.scoreOutOf10.toFixed(2)}
                             <span className="text-[9px] text-[var(--color-text-dim)] font-normal"> / 10</span>
                           </div>
-                          {isExpanded ? <ChevronUp className="w-4 h-4 text-[var(--color-text-dim)]" /> : <ChevronDown className="w-4 h-4 text-[var(--color-text-dim)]" />}
+                          {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                         </div>
                       </div>
 
                       <div className="w-full bg-[var(--color-surface-subtle)] h-1.5 rounded-full overflow-hidden border border-[var(--color-border)]">
                         <div
-                          className="h-full rounded-full transition-all duration-700 ease-out bg-gradient-to-r from-emerald-500 via-amber-500 to-emerald-400"
+                          className="h-full rounded-full transition-all duration-700 bg-gradient-to-r from-emerald-500 via-amber-500 to-emerald-400"
                           style={{ width: `${scorePercent}%` }}
                         />
                       </div>
@@ -844,40 +919,35 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
                     {isExpanded && (
                       <div className="p-4.5 border-t border-[var(--color-border)] bg-[var(--color-surface)] space-y-4 text-xs">
                         {rep.benchPenaltyNote && (
-                          <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-2xl text-[11px] text-rose-700 dark:text-rose-300 font-semibold flex items-start space-x-2">
-                            <AlertTriangle className="w-4 h-4 flex-shrink-0 text-rose-500 mt-0.5" />
+                          <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-2xl text-[11px] text-rose-500 font-semibold flex items-start space-x-2">
+                            <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
                             <span>{rep.benchPenaltyNote}</span>
                           </div>
                         )}
 
-                        <div>
-                          <span className="text-[10px] font-black uppercase tracking-wider text-[var(--color-text-dim)] block mb-2">
-                            Phase & Tactical Balance Matrix
-                          </span>
-                          <div className="grid grid-cols-2 gap-2 text-[11px]">
-                            <div className="p-2.5 rounded-xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)]">
-                              <span className="text-[9px] text-[var(--color-text-dim)] uppercase font-bold block">Batting Depth</span>
-                              <span className="font-bold text-[var(--color-text-main)]">{rep.playingBalance.battingDepth}</span>
-                            </div>
-                            <div className="p-2.5 rounded-xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)]">
-                              <span className="text-[9px] text-[var(--color-text-dim)] uppercase font-bold block">Death Bowling</span>
-                              <span className="font-bold text-[var(--color-text-main)]">{rep.playingBalance.deathBowling}</span>
-                            </div>
-                            <div className="p-2.5 rounded-xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)]">
-                              <span className="text-[9px] text-[var(--color-text-dim)] uppercase font-bold block">Spin & Middle Control</span>
-                              <span className="font-bold text-[var(--color-text-main)]">{rep.playingBalance.spinQuality}</span>
-                            </div>
-                            <div className="p-2.5 rounded-xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)]">
-                              <span className="text-[9px] text-[var(--color-text-dim)] uppercase font-bold block">Bench Depth</span>
-                              <span className="font-bold text-[var(--color-text-main)]">{rep.benchStrength}</span>
-                            </div>
+                        <div className="grid grid-cols-2 gap-2 text-[11px]">
+                          <div className="p-2.5 rounded-xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)]">
+                            <span className="text-[9px] text-[var(--color-text-dim)] uppercase font-bold block">Batting Depth</span>
+                            <span className="font-bold text-[var(--color-text-main)]">{rep.playingBalance.battingDepth}</span>
+                          </div>
+                          <div className="p-2.5 rounded-xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)]">
+                            <span className="text-[9px] text-[var(--color-text-dim)] uppercase font-bold block">Death Bowling</span>
+                            <span className="font-bold text-[var(--color-text-main)]">{rep.playingBalance.deathBowling}</span>
+                          </div>
+                          <div className="p-2.5 rounded-xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)]">
+                            <span className="text-[9px] text-[var(--color-text-dim)] uppercase font-bold block">Spin Quality</span>
+                            <span className="font-bold text-[var(--color-text-main)]">{rep.playingBalance.spinQuality}</span>
+                          </div>
+                          <div className="p-2.5 rounded-xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)]">
+                            <span className="text-[9px] text-[var(--color-text-dim)] uppercase font-bold block">Bench Depth</span>
+                            <span className="font-bold text-[var(--color-text-main)]">{rep.benchStrength}</span>
                           </div>
                         </div>
 
                         {rep.archetypeBreakdown?.length > 0 && (
                           <div className="space-y-1.5">
                             <span className="text-[10px] font-black uppercase text-[var(--color-primary)] block">
-                              Player Tactical Archetypes:
+                              Squad Archetypes, Leadership & Contracts:
                             </span>
                             <div className="flex flex-wrap gap-1.5">
                               {rep.archetypeBreakdown.map((item, i) => (
@@ -893,28 +963,11 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
                         )}
 
                         {rep.pros?.length > 0 && (
-                          <div className="space-y-1.5">
-                            <span className="text-[10px] font-black uppercase text-emerald-600 dark:text-emerald-400 block flex items-center space-x-1">
-                              <Zap className="w-3.5 h-3.5" />
-                              <span>Prime Strengths:</span>
-                            </span>
+                          <div className="space-y-1">
+                            <span className="text-[10px] font-black uppercase text-emerald-500 block">Prime Strengths:</span>
                             <ul className="list-disc list-inside space-y-0.5 text-[11px] text-[var(--color-text-muted)]">
                               {rep.pros.map((pro, i) => (
                                 <li key={i}>{pro}</li>
-                              ))}
-                            </ul>
-                          </div>
-                        )}
-
-                        {rep.cons?.length > 0 && (
-                          <div className="space-y-1.5">
-                            <span className="text-[10px] font-black uppercase text-rose-600 dark:text-rose-400 block flex items-center space-x-1">
-                              <AlertTriangle className="w-3.5 h-3.5" />
-                              <span>Tactical Vulnerabilities:</span>
-                            </span>
-                            <ul className="list-disc list-inside space-y-0.5 text-[11px] text-[var(--color-text-muted)]">
-                              {rep.cons.map((con, i) => (
-                                <li key={i}>{con}</li>
                               ))}
                             </ul>
                           </div>
@@ -927,21 +980,9 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
             </div>
           </div>
         )}
-
-        {!analyzing && !masterReport && (
-          <div className="p-7 text-center bg-[var(--color-surface-subtle)] rounded-2xl border border-dashed border-[var(--color-border)] space-y-1.5">
-            <TrendingUp className="w-7 h-7 text-[var(--color-text-dim)] mx-auto mb-1 animate-pulse" />
-            <p className="text-xs font-bold text-[var(--color-text-main)]">Leaderboard Simulation Pending</p>
-            <p className="text-[11px] text-[var(--color-text-muted)]">
-              {isHost
-                ? 'Tap "Analyze Teams" above to run the 9-Vector Tactical Scout.'
-                : 'Waiting for the host to trigger the AI tournament scout...'}
-            </p>
-          </div>
-        )}
       </div>
 
-      {/* HEAD-TO-HEAD MINI-LEAGUE TOURNAMENT SIMULATOR */}
+      {/* HEAD-TO-HEAD MINI-LEAGUE SIMULATOR */}
       <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-3xl p-5 sm:p-6 shadow-xl space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-2.5">
@@ -953,7 +994,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
                 Mini-League Simulator
               </h2>
               <p className="text-[11px] text-[var(--color-text-dim)]">
-                Algorithmic ball-by-ball simulation of finalized Starting XIs
+                {targetPlayingCount}-Player Format · {selectedPitch.toUpperCase()} Pitch Conditions
               </p>
             </div>
           </div>
@@ -961,7 +1002,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
           <button
             type="button"
             onClick={handleRunTournamentSim}
-            className="text-[10px] font-black font-display uppercase tracking-wider px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-stone-950 transition cursor-pointer shadow-md active:scale-95"
+            className="text-[10px] font-black font-display uppercase tracking-wider px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-stone-950 transition cursor-pointer shadow-md"
           >
             {simResult ? 'Re-Simulate' : 'Simulate Tournament'}
           </button>
@@ -1031,7 +1072,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
         )}
       </div>
 
-      {/* SQUAD ROSTERS SUMMARY */}
+      {/* FINAL SQUAD SHEETS */}
       <div className="space-y-3.5">
         <h2 className="text-base font-black font-display uppercase tracking-wider text-[var(--color-text-main)] flex items-center space-x-2">
           <Award className="w-4.5 h-4.5 text-[var(--color-primary)]" />
@@ -1086,7 +1127,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
         ))}
       </div>
 
-      {/* HOST RESTART & RE-AUCTION CONTROLS */}
+      {/* HOST CONTROLS */}
       {isHost && (
         <div className="sticky bottom-10 bg-[var(--color-surface)]/95 backdrop-blur-md border border-[var(--color-border)] p-4 rounded-2xl shadow-2xl text-center space-y-2.5 z-20">
           {unsoldPlayers.length > 0 && (
@@ -1094,7 +1135,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
               type="button"
               disabled={reAuctioning}
               onClick={handleReAuctionUnsold}
-              className="w-full min-h-[48px] py-3 px-6 rounded-xl bg-amber-500 hover:bg-amber-600 text-stone-950 font-display text-sm font-black uppercase tracking-wider shadow-lg transition active:scale-98 flex items-center justify-center space-x-2 cursor-pointer"
+              className="w-full min-h-[48px] py-3 px-6 rounded-xl bg-amber-500 hover:bg-amber-600 text-stone-950 font-display text-sm font-black uppercase tracking-wider shadow-lg transition flex items-center justify-center space-x-2 cursor-pointer"
             >
               <RotateCcw className={`w-4 h-4 ${reAuctioning ? 'animate-spin' : ''}`} />
               <span>
@@ -1107,7 +1148,7 @@ export const CompletedView: React.FC<CompletedViewProps> = ({
             type="button"
             disabled={resetting}
             onClick={handleResetAuction}
-            className="w-full min-h-[44px] py-2.5 px-6 rounded-xl bg-stone-700 hover:bg-stone-800 text-white font-display text-xs font-bold uppercase tracking-wider shadow-md transition active:scale-98 flex items-center justify-center space-x-2 cursor-pointer"
+            className="w-full min-h-[44px] py-2.5 px-6 rounded-xl bg-stone-700 hover:bg-stone-800 text-white font-display text-xs font-bold uppercase tracking-wider shadow-md transition flex items-center justify-center space-x-2 cursor-pointer"
           >
             <RotateCcw className={`w-3.5 h-3.5 ${resetting ? 'animate-spin' : ''}`} />
             <span>{resetting ? 'Resetting Room...' : 'Start A Brand New Auction'}</span>

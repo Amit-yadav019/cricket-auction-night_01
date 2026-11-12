@@ -17,15 +17,20 @@ export const BroadcastHUD: React.FC<BroadcastHUDProps> = ({ room }) => {
     teamShort: string;
     amount: number;
   } | null>(null);
+  const [reactionBubble, setReactionBubble] = useState<{
+    teamShort: string;
+    emoji: string;
+    label: string;
+  } | null>(null);
 
   const lastHandledTimestampRef = useRef<number | null>(null);
+  const lastReactionTsRef = useRef<number | null>(null);
 
   const teams = Array.isArray(room?.teams) ? room.teams : [];
   const minSquad = room?.settings?.minSquadSize || room?.settings?.squadSize || 11;
   const maxSquad = room?.settings?.maxSquadSize || 25;
   const purseUnit = room?.settings?.purseUnit || 'Cr';
 
-  // Trigger 3D Swinging Gavel + Glowing Stamp once per result, then auto-clear in 2.2s
   useEffect(() => {
     const res = room?.lastResult;
     if (!res || !res.timestamp) return;
@@ -52,7 +57,18 @@ export const BroadcastHUD: React.FC<BroadcastHUDProps> = ({ room }) => {
     }
   }, [room?.lastResult?.timestamp]);
 
-  // Manage subtle stadium crowd murmur during active bidding
+  // Show live Table Reactions & Eye-Contact Bluffs
+  useEffect(() => {
+    const rx = (room as any)?.tableReaction;
+    if (!rx || !rx.timestamp || rx.timestamp === lastReactionTsRef.current) return;
+    if (Date.now() - rx.timestamp < 4000) {
+      lastReactionTsRef.current = rx.timestamp;
+      setReactionBubble({ teamShort: rx.teamShort, emoji: rx.emoji, label: rx.label });
+      const timer = setTimeout(() => setReactionBubble(null), 2600);
+      return () => clearTimeout(timer);
+    }
+  }, [(room as any)?.tableReaction?.timestamp]);
+
   useEffect(() => {
     if (room?.status === 'active') {
       sound.startCrowdAmbience();
@@ -105,25 +121,25 @@ export const BroadcastHUD: React.FC<BroadcastHUDProps> = ({ room }) => {
           display: inline-flex;
           animation: tickerScroll 28s linear infinite;
         }
-        .animate-ticker-marquee:hover {
-          animation-play-state: paused;
-        }
       `}</style>
 
-      {/* 1. NON-BLOCKING 3D SWINGING GAVEL & GLOWING SOLD/UNSOLD STAMP */}
+      {/* FLOATING TABLE REACTION TOAST */}
+      {reactionBubble && (
+        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-40 pointer-events-none animate-bounce">
+          <div className="px-4 py-1.5 rounded-full bg-stone-950/95 border border-amber-400/60 text-white shadow-2xl flex items-center space-x-2 text-xs font-display font-black uppercase tracking-wider">
+            <span className="px-2 py-0.5 rounded-full bg-amber-500 text-stone-950 text-[10px]">
+              {reactionBubble.teamShort}
+            </span>
+            <span className="text-base">{reactionBubble.emoji}</span>
+            <span>{reactionBubble.label}</span>
+          </div>
+        </div>
+      )}
+
+      {/* 1. NON-BLOCKING 3D SWINGING GAVEL & GLOWING STAMP */}
       {stampOverlay && (
         <div className="fixed inset-0 z-50 pointer-events-none flex items-center justify-center bg-black/50 backdrop-blur-[2px]">
           <div className="relative flex flex-col items-center p-8 sm:p-10 rounded-3xl bg-gradient-to-b from-stone-900 via-stone-950 to-black border-2 border-amber-500/60 shadow-[0_0_60px_rgba(245,158,11,0.35)] max-w-sm w-full mx-4 text-center overflow-hidden">
-            <div
-              className="absolute inset-0 pointer-events-none"
-              style={{
-                background:
-                  stampOverlay.type === 'SOLD'
-                    ? 'radial-gradient(circle at 50% 35%, rgba(16, 185, 129, 0.25), transparent 70%)'
-                    : 'radial-gradient(circle at 50% 35%, rgba(244, 63, 94, 0.25), transparent 70%)',
-              }}
-            />
-
             <div className="animate-gavel-slam relative w-18 h-18 rounded-3xl bg-gradient-to-tr from-amber-600/30 to-yellow-400/20 border border-amber-400/50 text-amber-400 flex items-center justify-center mb-3 shadow-xl">
               <Gavel className="w-10 h-10 drop-shadow-[0_4px_12px_rgba(251,191,36,0.6)]" />
             </div>
@@ -165,13 +181,13 @@ export const BroadcastHUD: React.FC<BroadcastHUDProps> = ({ room }) => {
         </div>
       )}
 
-      {/* 2. LIVE FRANCHISE PURSE LEADERBOARD DRAWER */}
+      {/* 2. LIVE FRANCHISE PURSE & ROLE MATRIX RADAR DRAWER */}
       <div className="fixed top-20 right-0 z-40 flex items-start">
         <button
           type="button"
           onClick={() => setDrawerOpen(!drawerOpen)}
           className="bg-[var(--color-surface-elevated)] border border-r-0 border-[var(--color-border)] px-2.5 py-3 rounded-l-2xl shadow-xl flex flex-col items-center space-y-1 text-[10px] font-black font-display uppercase text-[var(--color-primary)] cursor-pointer hover:bg-[var(--color-surface-subtle)] transition"
-          title="Live Franchise Purses & Max Bid Allowance"
+          title="Live Franchise Purses, Max Bid & Role Matrix"
         >
           {drawerOpen ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
           <Wallet className="w-4 h-4 text-amber-500" />
@@ -179,23 +195,30 @@ export const BroadcastHUD: React.FC<BroadcastHUDProps> = ({ room }) => {
         </button>
 
         {drawerOpen && (
-          <div className="w-72 sm:w-80 max-h-[75vh] overflow-y-auto bg-[var(--color-surface)]/95 backdrop-blur-xl border border-[var(--color-border)] rounded-bl-3xl shadow-2xl p-4 space-y-3">
+          <div className="w-76 sm:w-84 max-h-[75vh] overflow-y-auto bg-[var(--color-surface)]/95 backdrop-blur-xl border border-[var(--color-border)] rounded-bl-3xl shadow-2xl p-4 space-y-3">
             <div className="flex items-center justify-between border-b border-[var(--color-border)] pb-2">
               <span className="text-xs font-black font-display uppercase tracking-wider text-[var(--color-text-main)] flex items-center space-x-1.5">
                 <Shield className="w-4 h-4 text-amber-500" />
-                <span>Franchise Purse & Max Bid</span>
+                <span>Franchise Radar & Role Matrix</span>
               </span>
             </div>
 
             <div className="space-y-2.5">
               {teams.map((t) => {
-                const count = t.players?.length || 0;
+                const roster = t.players || [];
+                const count = roster.length;
                 const maxAllowed = calculateMaxBid(t, maxSquad, 0.2);
                 const needed = Math.max(0, minSquad - count);
+
+                const wk = roster.filter((p) => p.role === 'WK').length;
+                const bat = roster.filter((p) => p.role === 'BAT').length;
+                const ar = roster.filter((p) => p.role === 'AR').length;
+                const bowl = roster.filter((p) => p.role === 'BOWL').length;
+
                 return (
                   <div
                     key={t.id}
-                    className="p-2.5 rounded-2xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)] space-y-1.5 text-xs"
+                    className="p-2.5 rounded-2xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)] space-y-2 text-xs"
                   >
                     <div className="flex items-center justify-between">
                       <span className="font-black font-display uppercase text-[var(--color-text-main)] truncate">
@@ -211,11 +234,27 @@ export const BroadcastHUD: React.FC<BroadcastHUDProps> = ({ room }) => {
                         <Users className="w-3 h-3" />
                         <span>
                           Squad: <strong className="text-[var(--color-text-main)]">{count}/{minSquad}</strong>{' '}
-                          {needed > 0 ? `(${needed} needed)` : '✓'}
+                          {needed > 0 ? `(${needed} left)` : '✓'}
                         </span>
                       </span>
                       <span>
                         Max Bid: <strong className="text-amber-500 font-mono">₹{maxAllowed}</strong>
+                      </span>
+                    </div>
+
+                    {/* Role Matrix Pill Bar */}
+                    <div className="grid grid-cols-4 gap-1 pt-1 border-t border-[var(--color-border)]/60 text-center font-mono text-[9px]">
+                      <span className={`py-0.5 rounded ${wk === 0 ? 'bg-rose-500/15 text-rose-500 font-bold' : 'bg-[var(--color-surface)] text-[var(--color-text-muted)]'}`}>
+                        WK:{wk}
+                      </span>
+                      <span className="py-0.5 rounded bg-[var(--color-surface)] text-[var(--color-text-muted)]">
+                        BAT:{bat}
+                      </span>
+                      <span className="py-0.5 rounded bg-[var(--color-surface)] text-[var(--color-text-muted)]">
+                        AR:{ar}
+                      </span>
+                      <span className={`py-0.5 rounded ${bowl + ar < 3 ? 'bg-amber-500/15 text-amber-500 font-bold' : 'bg-[var(--color-surface)] text-[var(--color-text-muted)]'}`}>
+                        BWL:{bowl}
                       </span>
                     </div>
                   </div>

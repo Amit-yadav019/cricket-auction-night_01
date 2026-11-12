@@ -1,4 +1,10 @@
-import { Team, Player } from '../game/auctionRules';
+import {
+  Team,
+  Player,
+  PitchProfile,
+  getDynamicRoleRequirements,
+  calculateMaxBid,
+} from '../game/auctionRules';
 
 export interface TeamScoutRanking {
   teamId: string;
@@ -60,7 +66,17 @@ export interface PlayerTacticalDNA {
   spinControl: number;
   fielding: number;
   versatility: number;
+  leadership: number;
   tag: string;
+}
+
+export interface TeamLineupConfig {
+  playingIds: string[];
+  benchIds: string[];
+  impactPlayerId?: string;
+  captainId?: string;
+  viceCaptainId?: string;
+  contractTypes?: Record<string, '1yr' | '3yr'>;
 }
 
 export function derivePlayerDNA(player: Player): PlayerTacticalDNA {
@@ -73,6 +89,7 @@ export function derivePlayerDNA(player: Player): PlayerTacticalDNA {
   const bowlStyle = (player.bowlingStyle || '').toLowerCase();
   const isLeftArm = (player.battingStyle || '').toLowerCase().includes('left');
   const nameSeed = player.name.split('').reduce((acc, ch) => acc + ch.charCodeAt(0), 0) % 5;
+  const leadership = isMarquee ? 90 + nameSeed : isPremium ? 82 + nameSeed : 70 + nameSeed;
 
   switch (player.role) {
     case 'WK': {
@@ -87,6 +104,7 @@ export function derivePlayerDNA(player: Player): PlayerTacticalDNA {
         spinControl: 0,
         fielding: Math.min(96, 80 + Math.round(tierBonus * 0.6)),
         versatility: Math.min(94, 72 + tierBonus),
+        leadership,
         tag: isMarquee
           ? 'Elite Power-Hitting Keeper-Batter'
           : isMidTier
@@ -108,6 +126,7 @@ export function derivePlayerDNA(player: Player): PlayerTacticalDNA {
         spinControl: bowlStyle.includes('offbreak') || bowlStyle.includes('orthodox') ? 25 : 0,
         fielding: Math.min(97, 78 + Math.round(tierBonus * 0.7) + nameSeed),
         versatility: Math.min(95, 70 + tierBonus + (isLeftArm ? 4 : 0)),
+        leadership,
         tag:
           power > stability + 3
             ? 'Explosive Boundary Accelerator'
@@ -141,6 +160,7 @@ export function derivePlayerDNA(player: Player): PlayerTacticalDNA {
         spinControl: Math.min(96, spinControl),
         fielding: Math.min(97, 80 + Math.round(tierBonus * 0.7)),
         versatility: Math.min(99, 84 + Math.round(tierBonus * 0.8)),
+        leadership,
         tag: isSpinnerAR
           ? 'Spin-Bowling All-Rounder & Middle Enforcer'
           : isFastAR
@@ -171,6 +191,7 @@ export function derivePlayerDNA(player: Player): PlayerTacticalDNA {
         spinControl: Math.min(98, spinControl),
         fielding: Math.min(92, 70 + Math.round(tierBonus * 0.6)),
         versatility: Math.min(94, 65 + tierBonus),
+        leadership,
         tag: isSpinner
           ? 'Frontline Wrist/Finger Spin Specialist'
           : isLeftArmPace
@@ -181,135 +202,82 @@ export function derivePlayerDNA(player: Player): PlayerTacticalDNA {
   }
 }
 
-async function fetchGeminiLiveScoutReport(
-  teams: Team[],
-  lineups: Record<string, { playingIds: string[]; benchIds: string[] }>,
-  minSquad: number
-): Promise<MasterScoutReport | null> {
-  const apiKey = (import.meta as any).env?.VITE_GEMINI_API_KEY;
-  if (!apiKey) return null;
+/**
+ * Smart AI Bot Franchise Evaluator: Decides whether an AI-controlled team should bid on the current player
+ * based on role deficits, pitch synergy, max bid ceiling, and player value.
+ */
+export function evaluateAiBotBid(
+  botTeam: Team,
+  player: Player,
+  nextBidAmount: number,
+  minSquad: number,
+  maxSquad: number,
+  pitch: PitchProfile = 'balanced'
+): boolean {
+  const roster = botTeam.players || [];
+  if (roster.length >= maxSquad) return false;
 
-  const squadPayload = teams.map((t) => {
-    const players = Array.isArray(t.players) ? t.players : [];
-    const saved = lineups[t.id];
-    const playingIds =
-      saved?.playingIds?.length > 0 ? saved.playingIds : players.slice(0, minSquad).map((p) => p.id);
+  const maxAllowed = calculateMaxBid(botTeam, maxSquad, 0.2);
+  if (nextBidAmount > maxAllowed || nextBidAmount > botTeam.purse) return false;
 
-    const playingXI = players.filter((p) => playingIds.includes(p.id)).map((p) => `${p.name} (${p.role})`);
-    const bench = players.filter((p) => !playingIds.includes(p.id)).map((p) => `${p.name} (${p.role})`);
+  const dna = derivePlayerDNA(player);
+  const roleCount = roster.filter((p) => p.role === player.role).length;
+  const wkCount = roster.filter((p) => p.role === 'WK').length;
 
-    return {
-      teamId: t.id,
-      teamName: t.name,
-      playingXI,
-      bench,
-    };
-  });
+  // Calculate AI Valuation Ceiling for this player
+  let valuation = (player.basePrice || 0.5) * 2.2;
+  if (dna.power >= 88 || dna.deathBowl >= 85 || dna.spinControl >= 85) valuation += 2.5;
+  if (player.role === 'WK' && wkCount === 0) valuation += 3.0; // Urgent WK need
+  if (roleCount === 0) valuation += 2.0; // Needs at least 1 of each role
+  if (roster.length < minSquad) valuation += 1.2;
 
-  const prompt = `You are an elite IPL & T20 Head Analyst. Evaluate these finalized franchise squads based on REAL-WORLD T20 player profiles (strike rates, boundary power-hitting vs anchor stability, Powerplay swing vs Death-over yorker experience, bowling variations, spin control, fielding athleticism, left-right batting balance, and bench replacement depth).
+  // Pitch Synergy Boost
+  if (pitch === 'spin' && dna.spinControl >= 75) valuation += 1.8;
+  if (pitch === 'seam' && dna.ppBowl >= 80) valuation += 1.8;
+  if (pitch === 'flat' && dna.power >= 88) valuation += 1.8;
 
-CRITICAL RULES:
-1. NEVER give two teams the exact same scoreOutOf10. Use 2 decimal places (e.g., 9.34 vs 9.12) and explain the exact tactical edge (e.g., Buttler/Pooran/Head/Maxwell power-hitting vs Dhawan/Anuj Rawat/Rachin Ravindra stability, or Deepak Chahar PP-only vs Bumrah/Pathirana death overs).
-2. Penalize squads with zero or weak bench replacements (-1.5 to -2.0 pts) or missing 6th bowling options.
-3. Return ONLY valid raw JSON matching this exact schema (no markdown fences):
-{
-  "executiveSummary": "string",
-  "rankings": [
-    {
-      "teamId": "string",
-      "teamName": "string",
-      "scoreOutOf10": number,
-      "verdict": "string",
-      "benchPenaltyNote": "string or empty",
-      "benchStrength": "string",
-      "playingBalance": {
-        "battingDepth": "string",
-        "deathBowling": "string",
-        "spinQuality": "string",
-        "powerplayImpact": "string",
-        "fieldingAndVersatility": "string"
-      },
-      "metrics": {
-        "sixthBowlingOption": boolean,
-        "powerHittingIndex": number,
-        "anchorStabilityIndex": number,
-        "deathOverRating": number,
-        "variationsRating": number,
-        "fieldingRating": number
-      },
-      "archetypeBreakdown": ["Player Name — Exact T20 Role & Tactical Trait"],
-      "pros": ["string"],
-      "cons": ["string"]
-    }
-  ]
-}
+  // Cap valuation relative to remaining purse per needed slot
+  const slotsNeeded = Math.max(1, minSquad - roster.length);
+  const budgetPerSlot = botTeam.purse / slotsNeeded;
+  const ceiling = Math.min(maxAllowed, Math.max(player.basePrice || 0.5, Math.min(valuation, budgetPerSlot * 1.45)));
 
-SQUADS TO ANALYZE:
-${JSON.stringify(squadPayload, null, 2)}`;
-
-  try {
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0.35,
-            responseMimeType: 'application/json',
-          },
-        }),
-      }
-    );
-
-    if (!response.ok) return null;
-    const data = await response.json();
-    const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!rawText) return null;
-
-    const parsed = JSON.parse(rawText);
-    if (!parsed?.rankings || !Array.isArray(parsed.rankings)) return null;
-
-    parsed.rankings.sort((a: TeamScoutRanking, b: TeamScoutRanking) => b.scoreOutOf10 - a.scoreOutOf10);
-    for (let i = 1; i < parsed.rankings.length; i++) {
-      if (parsed.rankings[i].scoreOutOf10 >= parsed.rankings[i - 1].scoreOutOf10) {
-        parsed.rankings[i].scoreOutOf10 = Number((parsed.rankings[i - 1].scoreOutOf10 - 0.13).toFixed(2));
-      }
-    }
-
-    return {
-      executiveSummary: parsed.executiveSummary,
-      rankings: parsed.rankings,
-      generatedAt: Date.now(),
-    };
-  } catch {
-    return null;
-  }
+  return nextBidAmount <= ceiling;
 }
 
 export async function generateMasterScoutReport(
   teams: Team[],
-  lineups: Record<string, { playingIds: string[]; benchIds: string[] }>,
-  minSquad: number = 11
+  lineups: Record<string, TeamLineupConfig>,
+  minSquad: number = 11,
+  pitch: PitchProfile = 'balanced'
 ): Promise<MasterScoutReport> {
-  const liveAiReport = await fetchGeminiLiveScoutReport(teams, lineups, minSquad);
-  if (liveAiReport && liveAiReport.rankings.length > 0) {
-    return liveAiReport;
-  }
+  const { playingCount, minBowlers, sixthBowlerTarget } = getDynamicRoleRequirements(minSquad);
 
   const rawRankings: TeamScoutRanking[] = teams.map((team) => {
     const players = Array.isArray(team.players) ? team.players : [];
     const savedLineup = lineups[team.id];
+
     const playingIds =
       savedLineup?.playingIds?.length > 0
-        ? savedLineup.playingIds
-        : players.slice(0, minSquad).map((p) => p.id);
+        ? savedLineup.playingIds.slice(0, playingCount)
+        : players.slice(0, playingCount).map((p) => p.id);
 
     const playingXI = players.filter((p) => playingIds.includes(p.id));
-    const bench = players.filter((p) => !playingIds.includes(p.id));
+    const impactPlayer = savedLineup?.impactPlayerId
+      ? players.find((p) => p.id === savedLineup.impactPlayerId && !playingIds.includes(p.id))
+      : undefined;
 
-    const dnas = playingXI.map((p) => ({ player: p, dna: derivePlayerDNA(p) }));
+    const bench = players.filter((p) => !playingIds.includes(p.id) && p.id !== impactPlayer?.id);
+
+    // Combine Starting N + Impact Player Tactical Contribution
+    const effectiveSquad = impactPlayer ? [...playingXI, impactPlayer] : playingXI;
+    const dnas = effectiveSquad.map((p) => ({
+      player: p,
+      dna: derivePlayerDNA(p),
+      isCaptain: savedLineup?.captainId === p.id,
+      isViceCaptain: savedLineup?.viceCaptainId === p.id,
+      isImpact: impactPlayer?.id === p.id,
+      isLongTerm: savedLineup?.contractTypes?.[p.id] === '3yr',
+    }));
 
     const batters = dnas.filter((d) => ['BAT', 'WK', 'AR'].includes(d.player.role));
     const avgPower =
@@ -317,11 +285,12 @@ export async function generateMasterScoutReport(
     const avgStability =
       batters.length > 0 ? batters.reduce((sum, d) => sum + d.dna.stability, 0) / batters.length : 55;
 
+    const topN = Math.min(3, Math.max(2, Math.floor(playingCount / 3)));
     const sortedDeath = [...dnas].sort((a, b) => b.dna.deathBowl - a.dna.deathBowl);
-    const deathOverRating = sortedDeath.slice(0, 3).reduce((sum, d) => sum + d.dna.deathBowl, 0) / 3;
+    const deathOverRating = sortedDeath.slice(0, topN).reduce((sum, d) => sum + d.dna.deathBowl, 0) / topN;
 
     const sortedPP = [...dnas].sort((a, b) => b.dna.ppBowl - a.dna.ppBowl);
-    const ppOverRating = sortedPP.slice(0, 3).reduce((sum, d) => sum + d.dna.ppBowl, 0) / 3;
+    const ppOverRating = sortedPP.slice(0, topN).reduce((sum, d) => sum + d.dna.ppBowl, 0) / topN;
 
     const sortedSpin = [...dnas].sort((a, b) => b.dna.spinControl - a.dna.spinControl);
     const spinRating = sortedSpin.slice(0, 2).reduce((sum, d) => sum + d.dna.spinControl, 0) / 2;
@@ -333,23 +302,34 @@ export async function generateMasterScoutReport(
     const avgVersatility =
       dnas.length > 0 ? dnas.reduce((sum, d) => sum + d.dna.versatility, 0) / dnas.length : 70;
 
-    const leftHanders = batters.filter((b) =>
-      (b.player.battingStyle || '').toLowerCase().includes('left')
-    ).length;
-    const balanceBonus = leftHanders >= 2 && leftHanders <= 5 ? 0.25 : 0;
+    // Pitch Condition Archetype Synergy
+    let pitchSynergyBonus = 0;
+    if (pitch === 'spin') pitchSynergyBonus = ((spinRating - 65) / 100) * 0.65;
+    else if (pitch === 'seam') pitchSynergyBonus = ((ppOverRating - 65) / 100) * 0.65;
+    else if (pitch === 'flat') pitchSynergyBonus = ((avgPower - 70) / 100) * 0.65;
+
+    // Captaincy & Vice-Captaincy Composure Multiplier (1.5x C / 1.25x VC)
+    const captainEntry = dnas.find((d) => d.isCaptain);
+    const vcEntry = dnas.find((d) => d.isViceCaptain);
+    const leadershipBonus =
+      (captainEntry ? (captainEntry.dna.leadership / 100) * 0.25 : 0) +
+      (vcEntry ? (vcEntry.dna.leadership / 100) * 0.14 : 0);
+
+    // Impact Sub & Multi-Year Dynasty Bonus
+    const impactBonus = impactPlayer ? 0.28 : 0;
+    const longTermCount = dnas.filter((d) => d.isLongTerm).length;
+    const dynastyBonus = Math.min(0.24, longTermCount * 0.04);
+
+    // Purse Efficiency Bonus (rewarding smart unspent cap management)
+    const purseEfficiencyBonus = Math.min(0.22, (team.purse || 0) * 0.015);
 
     const genuineBowlers = dnas.filter(
       (d) =>
         d.player.role === 'BOWL' ||
         (d.player.role === 'AR' && (d.dna.ppBowl >= 50 || d.dna.deathBowl >= 50 || d.dna.spinControl >= 55))
     );
-    const hasSixthBowler = genuineBowlers.length >= 6;
+    const hasExtraBowler = genuineBowlers.length >= sixthBowlerTarget;
     const hasWK = playingXI.some((p) => p.role === 'WK');
-
-    const benchQualityScore = bench.reduce((acc, p) => {
-      const dna = derivePlayerDNA(p);
-      return acc + (dna.power + dna.stability + dna.versatility + Math.max(dna.ppBowl, dna.deathBowl)) / 320;
-    }, 0);
 
     let rawScore =
       (avgPower * 0.24 +
@@ -361,65 +341,71 @@ export async function generateMasterScoutReport(
         avgFielding * 0.04 +
         avgVersatility * 0.04) /
         10 +
-      balanceBonus;
+      pitchSynergyBonus +
+      leadershipBonus +
+      impactBonus +
+      dynastyBonus +
+      purseEfficiencyBonus;
 
-    if (!hasWK) rawScore -= 1.25;
-    if (genuineBowlers.length < 5) rawScore -= 1.4;
-    if (hasSixthBowler) rawScore += 0.35;
+    if (!hasWK) rawScore -= 1.2;
+    if (genuineBowlers.length < minBowlers) rawScore -= 1.35;
+    if (hasExtraBowler) rawScore += 0.35;
 
     let benchPenaltyNote: string | undefined;
     if (bench.length === 0) {
-      rawScore -= 1.85;
-      benchPenaltyNote = 'Zero bench depth (-1.85 pts): No injury or pitch-condition backup available.';
-    } else if (bench.length < 2) {
-      rawScore -= 0.65;
-      benchPenaltyNote = 'Thin reserves (-0.65 pts): Only 1 backup player on the bench.';
+      rawScore -= 1.5;
+      benchPenaltyNote = 'Zero bench reserves (-1.50 pts): No injury backup beyond Starting Lineup.';
     } else {
-      rawScore += Math.min(0.45, benchQualityScore * 0.15);
+      rawScore += Math.min(0.4, bench.length * 0.14);
     }
 
     const dnaFingerprint = dnas.reduce(
       (acc, d, idx) => acc + (d.dna.power * 0.0013 + d.dna.deathBowl * 0.0017 + idx * 0.0007),
       0
     );
-    const finalScore = Math.min(9.94, Math.max(3.5, Number((rawScore + (dnaFingerprint % 0.19)).toFixed(2))));
+    const finalScore = Math.min(9.95, Math.max(3.5, Number((rawScore + (dnaFingerprint % 0.19)).toFixed(2))));
 
     const pros: string[] = [];
     const cons: string[] = [];
-    const archetypeBreakdown = dnas.map((d) => `${d.player.name} — ${d.dna.tag}`);
+    const archetypeBreakdown = dnas.map((d) => {
+      const badges = [
+        d.isCaptain ? '(C)' : '',
+        d.isViceCaptain ? '(VC)' : '',
+        d.isImpact ? '[IMPACT SUB]' : '',
+        d.isLongTerm ? '[3-YR LOCK]' : '',
+      ]
+        .filter(Boolean)
+        .join(' ');
+      return `${d.player.name} ${badges} — ${d.dna.tag}`.trim();
+    });
 
     const topPowerHitter = [...batters].sort((a, b) => b.dna.power - a.dna.power)[0];
-    const topAnchor = [...batters].sort((a, b) => b.dna.stability - a.dna.stability)[0];
-
     if (topPowerHitter && topPowerHitter.dna.power >= 88) {
       pros.push(
-        `Boundary Power Ceiling: ${topPowerHitter.player.name} (${topPowerHitter.dna.tag}, Power ${topPowerHitter.dna.power}/100) drives high-tempo scoring.`
-      );
-    } else if (topPowerHitter) {
-      cons.push(
-        `Moderate Six-Hitting Ceiling: Relies on ${topPowerHitter.player.name} (Power ${topPowerHitter.dna.power}/100); lacks an elite 90+ finisher.`
+        `Boundary Ceiling: ${topPowerHitter.player.name} (Power ${topPowerHitter.dna.power}/100) anchors rapid scoring.`
       );
     }
 
-    if (topAnchor && topAnchor.dna.stability >= 86) {
+    if (impactPlayer) {
+      pros.push(`Tactical Impact Sub Armed: ${impactPlayer.name} (${impactPlayer.role}) provides live phase flexibility.`);
+    }
+
+    if (captainEntry) {
+      pros.push(`On-Field Leadership: Captain ${captainEntry.player.name} boosts crunch-over composure.`);
+    }
+
+    if (pitch !== 'balanced') {
       pros.push(
-        `Collapse Insurance: ${topAnchor.player.name} (Stability ${topAnchor.dna.stability}/100) anchors the innings under pressure.`
+        `Venue Synergy (${pitch.toUpperCase()}): ${
+          pitchSynergyBonus >= 0 ? `+${pitchSynergyBonus.toFixed(2)} pts pitch advantage` : 'Slightly mismatched to surface'
+        }.`
       );
     }
 
-    const bestDeath = sortedDeath[0];
-    if (bestDeath && bestDeath.dna.deathBowl >= 84) {
-      pros.push(
-        `Death-Over Control: ${bestDeath.player.name} (Death ${bestDeath.dna.deathBowl}/100, Variations ${bestDeath.dna.variations}/100) locks down overs 16–20.`
-      );
+    if (hasExtraBowler) {
+      pros.push(`Extra Bowling Option: ${genuineBowlers.length} credible bowlers for a ${playingCount}-player XI.`);
     } else {
-      cons.push(`Death-Over Vulnerability: Lacks a proven 85+ yorker/slower-ball specialist for the final 4 overs.`);
-    }
-
-    if (hasSixthBowler) {
-      pros.push(`6th Bowling Option Armed: ${genuineBowlers.length} genuine bowlers provide tactical flexibility.`);
-    } else {
-      cons.push(`5-Bowler Tightrope: Only ${genuineBowlers.length} frontline bowling options in the XI.`);
+      cons.push(`Tight Bowling Attack: Only ${genuineBowlers.length} genuine bowling options (target ${sixthBowlerTarget}+).`);
     }
 
     return {
@@ -428,26 +414,26 @@ export async function generateMasterScoutReport(
       scoreOutOf10: finalScore,
       verdict:
         finalScore >= 8.5
-          ? 'Championship Favorite — Complete Phase, Power & Bench Balance'
+          ? `Championship Favorite (${playingCount}-Player Format)`
           : finalScore >= 7.5
-          ? 'Playoff Contender — Strong Core with Minor Phase Gaps'
-          : 'Dark Horse — Dependent on Star Individual Performances',
+          ? 'Playoff Contender — Strong Phase & Role Core'
+          : 'Dark Horse — Relies on Individual Match-Winners',
       benchPenaltyNote,
       benchStrength:
-        bench.length >= 4
+        bench.length >= 3
           ? `Deep (${bench.length} Reserves)`
-          : bench.length >= 2
-          ? `Adequate (${bench.length} Reserves)`
-          : `Critical (${bench.length} Reserves)`,
+          : bench.length >= 1
+          ? `Active (${bench.length} Reserve${bench.length > 1 ? 's' : ''})`
+          : 'Empty (0 Reserves)',
       playingBalance: {
         battingDepth: `Power ${Math.round(avgPower)}/100 · Stability ${Math.round(avgStability)}/100`,
-        deathBowling: `${Math.round(deathOverRating)}/100 (${bestDeath?.player.name || 'N/A'})`,
+        deathBowling: `${Math.round(deathOverRating)}/100 (${sortedDeath[0]?.player.name || 'N/A'})`,
         spinQuality: `${Math.round(spinRating)}/100 (${sortedSpin[0]?.player.name || 'N/A'})`,
         powerplayImpact: `${Math.round(ppOverRating)}/100 (${sortedPP[0]?.player.name || 'N/A'})`,
         fieldingAndVersatility: `Fielding ${Math.round(avgFielding)}/100 · Versatility ${Math.round(avgVersatility)}/100`,
       },
       metrics: {
-        sixthBowlingOption: hasSixthBowler,
+        sixthBowlingOption: hasExtraBowler,
         powerHittingIndex: Math.round(avgPower),
         anchorStabilityIndex: Math.round(avgStability),
         deathOverRating: Math.round(deathOverRating),
@@ -473,14 +459,12 @@ export async function generateMasterScoutReport(
   return {
     executiveSummary:
       leader && runnerUp
-        ? `${leader.teamName} (${leader.scoreOutOf10.toFixed(2)}/10) takes the #1 tactical ranking over ${runnerUp.teamName} (${runnerUp.scoreOutOf10.toFixed(
+        ? `[${playingCount}-Player Format · ${pitch.toUpperCase()} Pitch] ${leader.teamName} (${leader.scoreOutOf10.toFixed(
             2
-          )}/10) through superior ${
-            leader.metrics.powerHittingIndex > runnerUp.metrics.powerHittingIndex
-              ? 'boundary power-hitting ceiling'
-              : 'death-over execution and bowling variations'
-          }.`
-        : '9-Dimension T20 Squad Tactical Analysis complete.',
+          )}/10) leads ${runnerUp.teamName} (${runnerUp.scoreOutOf10.toFixed(
+            2
+          )}/10) with superior phase balance, leadership multipliers, and bench depth.`
+        : 'Dynamic Squad Tactical Analysis complete.',
     rankings: rawRankings,
     generatedAt: Date.now(),
   };
@@ -488,9 +472,11 @@ export async function generateMasterScoutReport(
 
 export function simulateMiniTournament(
   teams: Team[],
-  lineups: Record<string, { playingIds: string[]; benchIds: string[] }>,
-  minSquad: number = 11
+  lineups: Record<string, TeamLineupConfig>,
+  minSquad: number = 11,
+  pitch: PitchProfile = 'balanced'
 ): TournamentSimulationResult {
+  const { playingCount } = getDynamicRoleRequirements(minSquad);
   const standings: Record<
     string,
     { teamId: string; teamName: string; played: number; won: number; lost: number; runsFor: number; runsAgainst: number; points: number }
@@ -513,27 +499,50 @@ export function simulateMiniTournament(
   });
 
   const simulateMatch = (teamA: Team, teamB: Team) => {
-    const getXI = (t: Team) => {
-      const ids = lineups[t.id]?.playingIds;
-      const list = ids?.length > 0 ? t.players.filter((p) => ids.includes(p.id)) : t.players.slice(0, minSquad);
-      return list.length > 0 ? list : t.players;
+    const getEffectiveSquad = (t: Team) => {
+      const cfg = lineups[t.id];
+      const baseList =
+        cfg?.playingIds?.length > 0
+          ? t.players.filter((p) => cfg.playingIds.includes(p.id)).slice(0, playingCount)
+          : t.players.slice(0, playingCount);
+      const impact = cfg?.impactPlayerId ? t.players.find((p) => p.id === cfg.impactPlayerId) : undefined;
+      const combined = impact && !baseList.some((p) => p.id === impact.id) ? [...baseList, impact] : baseList;
+      return {
+        squad: combined.length > 0 ? combined : t.players,
+        captainId: cfg?.captainId,
+        vcId: cfg?.viceCaptainId,
+      };
     };
 
-    const xiA = getXI(teamA);
-    const xiB = getXI(teamB);
+    const sideA = getEffectiveSquad(teamA);
+    const sideB = getEffectiveSquad(teamB);
 
-    const calcInnings = (battingXI: Player[], battingTeamName: string, bowlingXI: Player[], bowlingTeamName: string) => {
+    const calcInnings = (
+      side: { squad: Player[]; captainId?: string; vcId?: string },
+      battingTeamName: string,
+      bowlingSide: { squad: Player[] },
+      bowlingTeamName: string
+    ) => {
       let totalRuns = 0;
       let totalWickets = 0;
 
-      const bowlers = bowlingXI.filter((p) => p.role === 'BOWL' || p.role === 'AR');
-      const activeBowlers = bowlers.length >= 5 ? bowlers.slice(0, 5) : bowlingXI.slice(0, 5);
+      const bowlers = bowlingSide.squad.filter((p) => p.role === 'BOWL' || p.role === 'AR');
+      const activeBowlers = bowlers.length >= 4 ? bowlers.slice(0, 5) : bowlingSide.squad.slice(0, 5);
 
-      battingXI.slice(0, 8).forEach((batter, idx) => {
-        if (totalWickets >= 10) return;
+      const batterLimit = Math.min(side.squad.length, Math.max(5, playingCount - 2));
+      side.squad.slice(0, batterLimit).forEach((batter, idx) => {
+        if (totalWickets >= playingCount - 1) return;
         const dna = derivePlayerDNA(batter);
+        const capMult = batter.id === side.captainId ? 1.15 : batter.id === side.vcId ? 1.08 : 1.0;
+        const pitchMult = pitch === 'flat' ? 1.12 : pitch === 'spin' && dna.spinControl > 0 ? 1.05 : 1.0;
         const variance = 0.72 + Math.random() * 0.62;
-        const baseRuns = ((dna.power * 0.45 + dna.stability * 0.55) / 100) * (idx < 4 ? 38 : 22) * variance;
+
+        const baseRuns =
+          ((dna.power * 0.45 + dna.stability * 0.55) / 100) *
+          (idx < 4 ? 38 : 22) *
+          variance *
+          capMult *
+          pitchMult;
         const runs = Math.round(baseRuns);
         const sr = (dna.power * 1.45 + 35) * (0.88 + Math.random() * 0.25);
         const balls = Math.max(4, Math.round((runs / sr) * 100));
@@ -548,7 +557,7 @@ export function simulateMiniTournament(
         batterStats[batter.id].balls += balls;
       });
 
-      let wicketsToDistribute = Math.min(9, totalWickets);
+      let wicketsToDistribute = Math.min(playingCount - 2, totalWickets);
       activeBowlers.forEach((bowler) => {
         const dna = derivePlayerDNA(bowler);
         const skill = Math.max(dna.ppBowl, dna.deathBowl, dna.spinControl, 55);
@@ -566,11 +575,11 @@ export function simulateMiniTournament(
         bowlerStats[bowler.id].overs += 4;
       });
 
-      return Math.max(115, totalRuns);
+      return Math.max(110, totalRuns);
     };
 
-    const scoreA = calcInnings(xiA, teamA.name, xiB, teamB.name);
-    let scoreB = calcInnings(xiB, teamB.name, xiA, teamA.name);
+    const scoreA = calcInnings(sideA, teamA.name, sideB, teamB.name);
+    let scoreB = calcInnings(sideB, teamB.name, sideA, teamA.name);
     if (scoreA === scoreB) scoreB += 1;
 
     return { scoreA, scoreB, winner: scoreA > scoreB ? teamA : teamB, loser: scoreA > scoreB ? teamB : teamA };
@@ -641,12 +650,10 @@ export function simulateMiniTournament(
     pointsTable: pointsTable.map(({ rawNrr, ...rest }) => rest),
   };
 }
-/**
- * Compatibility wrapper for AuctionSummaryModal.tsx
- */
+
 export async function fetchAiScoutReport(
   teams: Team[],
   minSquad: number = 11
 ): Promise<MasterScoutReport> {
-  return generateMasterScoutReport(teams, {}, minSquad);
+  return generateMasterScoutReport(teams, {}, minSquad, 'balanced');
 }

@@ -17,6 +17,8 @@ import {
   Music,
   Zap,
   Sparkles,
+  Bot,
+  Eye,
 } from 'lucide-react';
 import {
   RoomData,
@@ -27,11 +29,14 @@ import {
   reAuctionUnsoldTransaction,
   endAuctionTransaction,
   toggleThinkingTimeTransaction,
+  sendTableReactionTransaction,
+  toggleAiBotTeamTransaction,
 } from '../services/auctionService';
 import {
   calculateMaxBid,
   PlayerRole,
   Team,
+  PitchProfile,
 } from '../game/auctionRules';
 import {
   playBidChime,
@@ -42,6 +47,7 @@ import {
   speakAuctioneer,
 } from '../utils/audio';
 import { sound } from '../services/soundService';
+import { evaluateAiBotBid } from '../services/aiService';
 
 interface AuctionViewProps {
   room: RoomData;
@@ -73,13 +79,11 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
   const [hostActionLoading, setHostActionLoading] = useState(false);
   const [thinkingLoading, setThinkingLoading] = useState(false);
 
-  // Auto-Gavel Timer States (8s opening unsold, 6s post-bid sold, 10s hold)
   const [autoTimerEnabled, setAutoTimerEnabled] = useState<boolean>(true);
   const [lotSecondsLeft, setLotSecondsLeft] = useState<number>(OPENING_UNSOLD_SECONDS);
   const [holdSecondsLeft, setHoldSecondsLeft] = useState<number>(0);
   const [bgmActive, setBgmActive] = useState<boolean>(false);
 
-  // Track how many 10s holds the owner has taken on the current player
   const [playerHoldCount, setPlayerHoldCount] = useState<number>(0);
   const [selectedMultiplier, setSelectedMultiplier] = useState<number>(1);
 
@@ -109,8 +113,11 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
   const isFirstBid = currentBid === null;
   const thinkingAlert = (room as any)?.thinkingAlert;
   const isHoldActive = Boolean(thinkingAlert && holdSecondsLeft > 0);
+  const maxSquad = room?.settings?.maxSquadSize || room?.settings?.squadSize || 25;
+  const minSquad = room?.settings?.minSquadSize || maxSquad;
+  const pitchProfile: PitchProfile = (room?.settings as any)?.pitchProfile || 'balanced';
 
-  // Reset hold counter, error state, & 8.0-second opening timer immediately when a new player enters
+  // Reset hold counter & 8.0-second opening timer when a new player arrives
   useEffect(() => {
     if (!lot?.player?.id) return;
     setPlayerHoldCount(0);
@@ -135,7 +142,30 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
     }
   }, [lot?.currentBid, lot?.leadingTeamId, lot?.bidHistory?.length]);
 
-  // Host Heartbeat check
+  // Smart AI Bot Auto-Bidding Loop (Runs on Host client for any team marked isAiBot)
+  useEffect(() => {
+    if (!isHost || !lot?.player || room?.status !== 'active' || isHoldActive) return;
+
+    const aiTeams = teamsList.filter((t) => (t as any).isAiBot && t.id !== lot.leadingTeamId);
+    if (aiTeams.length === 0) return;
+
+    const timer = setTimeout(() => {
+      const step = room?.settings?.bidStep || 0.5;
+      const nextAmount = Number(
+        (lot.currentBid === null ? lot.player.basePrice || 0.5 : lot.currentBid + step).toFixed(2)
+      );
+
+      for (const bot of aiTeams) {
+        if (evaluateAiBotBid(bot, lot.player, nextAmount, minSquad, maxSquad, pitchProfile)) {
+          handlePlaceBid(bot.id, nextAmount, lot.currentBid === null ? 0 : 1);
+          break;
+        }
+      }
+    }, 1800);
+
+    return () => clearTimeout(timer);
+  }, [isHost, lot?.player?.id, lot?.currentBid, lot?.leadingTeamId, room?.status, isHoldActive]);
+
   useEffect(() => {
     const checkHeartbeat = () => {
       const diff = Date.now() - (room?.hostHeartbeat || 0);
@@ -146,7 +176,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
     return () => clearInterval(interval);
   }, [room?.hostHeartbeat]);
 
-  // 10-Second Strategic Hold Countdown (Unlimited Holds per Player)
+  // 10-Second Strategic Hold Countdown
   useEffect(() => {
     if (!thinkingAlert?.expiresAt) {
       setHoldSecondsLeft(0);
@@ -163,7 +193,6 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
       const remSec = Math.max(0, Number((remMs / 1000).toFixed(1)));
       setHoldSecondsLeft(remSec);
 
-      // Pause main lot deadline while hold is active, giving fresh buffer when hold ends
       const postHoldBuffer = lot?.currentBid === null ? OPENING_UNSOLD_SECONDS : POST_BID_SOLD_SECONDS;
       lotDeadlineRef.current = Date.now() + postHoldBuffer * 1000;
 
@@ -231,7 +260,6 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
     hostToken,
   ]);
 
-  // Screen shake & voice narration on SOLD/UNSOLD (BroadcastHUD renders the visual stamp cleanly)
   useEffect(() => {
     if (room?.lastResult && room.lastResult.timestamp !== lastStampTs) {
       setLastStampTs(room.lastResult.timestamp);
@@ -258,7 +286,6 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
     }
   }, [room?.lastResult?.timestamp, soundEnabled, voiceNarration, lastStampTs, room?.settings?.purseUnit]);
 
-  // Detect outbid and bid audio cues
   useEffect(() => {
     if (!room?.currentLot) return;
     const bids = room.currentLot.bidHistory || [];
@@ -290,9 +317,6 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
 
   const teamPlayerCount = activeBiddingTeam ? (activeBiddingTeam.players?.length || 0) : 0;
   const teamPurse = activeBiddingTeam ? activeBiddingTeam.purse : 0;
-
-  const maxSquad = room?.settings?.maxSquadSize || room?.settings?.squadSize || 25;
-  const minSquad = room?.settings?.minSquadSize || maxSquad;
   const slotsLeft = maxSquad - teamPlayerCount;
 
   const allTeamsMetMin =
@@ -387,7 +411,6 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
     }
   };
 
-  // Owner Request: Take a 10-second Strategic Hold (Unlimited uses per player)
   const handleTake10SecHold = async () => {
     const roomIdentifier = room?.code || (room as any)?.roomCode;
     if (!roomIdentifier || !myClaimedTeam) return;
@@ -409,6 +432,19 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
     const roomIdentifier = room?.code || (room as any)?.roomCode;
     if (!roomIdentifier) return;
     await toggleThinkingTimeTransaction(roomIdentifier, '', '', false);
+  };
+
+  const handleSendReaction = async (emoji: string, label: string) => {
+    const roomIdentifier = room?.code || (room as any)?.roomCode;
+    const sender = myClaimedTeam || activeBiddingTeam;
+    if (!roomIdentifier || !sender) return;
+    await sendTableReactionTransaction(
+      roomIdentifier,
+      sender.id,
+      sender.shortName || sender.name.slice(0, 3).toUpperCase(),
+      emoji,
+      label
+    );
   };
 
   const handleToggleBgm = () => {
@@ -578,7 +614,22 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
   const maxTimerWindow = isFirstBid ? OPENING_UNSOLD_SECONDS : POST_BID_SOLD_SECONDS;
   const timerPercent = Math.min(100, Math.max(0, (lotSecondsLeft / maxTimerWindow) * 100));
 
-  // Realistic Broadcast Auctioneer Callout Stage
+  // Live Value / Overpay Telemetry Tag
+  const basePrice = lot?.player?.basePrice || 0.5;
+  const priceRatio = currentBid ? currentBid / basePrice : 1;
+  const valueBadge =
+    currentBid && priceRatio >= 5
+      ? { label: '💸 RECORD BIDDING WAR', color: 'bg-rose-500/15 text-rose-500 border-rose-500/40' }
+      : currentBid && priceRatio <= 1.5 && basePrice >= 1.5
+      ? { label: '🔥 STEAL VALUE', color: 'bg-emerald-500/15 text-emerald-500 border-emerald-500/40' }
+      : null;
+
+  // Upcoming Players Preview (when public pool is enabled)
+  const upcomingPlayers =
+    room?.settings?.poolVisibility !== 'hidden' && Array.isArray((room as any)?.queue)
+      ? ((room as any).queue as any[]).slice(0, 3)
+      : [];
+
   const getAuctioneerCallout = () => {
     if (isHoldActive) return '⏸️ HAMMER PAUSED — STRATEGY HUDDLE';
     if (lotSecondsLeft <= 1.5) {
@@ -596,7 +647,6 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
         isScreenShaking ? 'shake-action' : ''
       }`}
     >
-      {/* Broadcast Stage Radial Spotlight */}
       <div
         className="fixed inset-0 pointer-events-none -z-10"
         style={{
@@ -703,7 +753,24 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
         </button>
       </div>
 
-      {/* Dismissible Error Banner */}
+      {/* NEXT UP IN QUEUE PREVIEW PILL */}
+      {upcomingPlayers.length > 0 && (
+        <div className="px-3 py-1.5 rounded-xl bg-[var(--color-surface-subtle)] border border-[var(--color-border)] flex items-center justify-between text-[10px] overflow-x-auto whitespace-nowrap space-x-2">
+          <span className="font-display font-black uppercase tracking-wider text-[var(--color-primary)] flex items-center space-x-1 shrink-0">
+            <Eye className="w-3 h-3" />
+            <span>Next Up:</span>
+          </span>
+          <div className="flex items-center space-x-2 text-[var(--color-text-muted)]">
+            {upcomingPlayers.map((up, i) => (
+              <span key={up.id || i} className="font-medium">
+                <strong className="text-[var(--color-text-main)]">{up.name}</strong> ({up.role})
+                {i < upcomingPlayers.length - 1 ? ' •' : ''}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
       {biddingError && (
         <div
           onClick={() => setBiddingError('')}
@@ -713,13 +780,12 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
         </div>
       )}
 
-      {/* BROADCAST PLAYER PODIUM CARD (Keyed by lot.player.id for instant zero-refresh transitions) */}
+      {/* BROADCAST PLAYER PODIUM CARD */}
       {lot ? (
         <div
           key={lot.player.id}
           className="bg-gradient-to-b from-[var(--color-surface-elevated)] to-[var(--color-surface)] border border-[var(--color-border)] rounded-3xl p-4 sm:p-5 shadow-xl relative overflow-hidden transition-all duration-300"
         >
-          {/* Top Bar: Role Badge, Auto-Gavel Clock & Base Price */}
           <div className="flex items-center justify-between mb-2">
             <span
               className={`text-xs font-black px-2.5 py-0.5 rounded-full border uppercase tracking-wider ${getRoleBadgeColor(
@@ -753,7 +819,6 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
             </span>
           </div>
 
-          {/* Animated Auto-Gavel Progress Bar */}
           {autoTimerEnabled && (
             <div className="w-full h-1.5 bg-[var(--color-surface-subtle)] rounded-full overflow-hidden mb-3 border border-[var(--color-border)]">
               <div
@@ -769,14 +834,12 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
             </div>
           )}
 
-          {/* Player Name */}
           <div className="text-center my-1">
             <h2 className="text-2xl sm:text-3xl font-black font-display tracking-wide uppercase text-[var(--color-text-main)] drop-shadow-xs">
               {lot.player.name}
             </h2>
           </div>
 
-          {/* Player Style Attributes */}
           <div className="flex flex-wrap items-center justify-center gap-1.5 mt-2 mb-3">
             {lot.player.cappedStatus && (
               <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[var(--color-surface-subtle)] border border-[var(--color-border)] text-[var(--color-text-dim)]">
@@ -797,9 +860,15 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
                   ⚾ {lot.player.bowlingStyle}
                 </span>
               )}
+
+            {valueBadge && (
+              <span className={`text-[10px] font-black px-2.5 py-0.5 rounded-full border uppercase tracking-wider ${valueBadge.color}`}>
+                {valueBadge.label}
+              </span>
+            )}
           </div>
 
-          {/* Current Bid Scoreboard with Live Auctioneer Stage Callout */}
+          {/* Current Bid Scoreboard */}
           <div className="my-3 text-center bg-[var(--color-surface-subtle)] border border-[var(--color-border)] rounded-2xl py-3.5 px-4 shadow-inner">
             {isBiddingWar ? (
               <div className="mb-2 inline-flex items-center space-x-1 px-3 py-0.5 rounded-full bg-red-600 text-white text-[10px] font-black font-display uppercase tracking-wider bidding-war-pulse shadow-sm">
@@ -902,7 +971,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
         </div>
       )}
 
-      {/* OWNER BIDDING CONTROLS & UNLIMITED 10-SECOND HOLD BUTTON */}
+      {/* OWNER BIDDING CONTROLS, TABLE REACTIONS & UNLIMITED 10-SECOND HOLD */}
       {activeBiddingTeam && (
         <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-3xl p-4 shadow-md space-y-3">
           <div className="flex items-center justify-between pb-2 border-b border-[var(--color-border)]">
@@ -1009,7 +1078,6 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
               )}
             </button>
 
-            {/* UNLIMITED 10-SECOND HOLD BUTTON FOR OWNERS */}
             {myClaimedTeam && lot && (
               <button
                 type="button"
@@ -1028,16 +1096,36 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
               </button>
             )}
           </div>
+
+          {/* QUICK-TAP TABLE REACTIONS & BLUFFS */}
+          <div className="grid grid-cols-4 gap-1.5 pt-1">
+            {[
+              { emoji: '👀', label: 'Watching' },
+              { emoji: '🔥', label: 'Price Up!' },
+              { emoji: '🤝', label: 'Good Buy' },
+              { emoji: '❌', label: 'We Are Out' },
+            ].map((rx) => (
+              <button
+                key={rx.label}
+                type="button"
+                onClick={() => handleSendReaction(rx.emoji, rx.label)}
+                className="py-1.5 px-2 rounded-xl bg-[var(--color-surface-subtle)] hover:bg-[var(--color-surface-elevated)] border border-[var(--color-border)] text-[10px] font-bold text-[var(--color-text-muted)] hover:text-[var(--color-text-main)] transition cursor-pointer flex items-center justify-center space-x-1 active:scale-95"
+              >
+                <span>{rx.emoji}</span>
+                <span className="truncate">{rx.label}</span>
+              </button>
+            ))}
+          </div>
         </div>
       )}
 
-      {/* HOST CONTROLS & MANUAL OVERRIDES */}
+      {/* HOST CONTROLS, AI BOT SEATS & MANUAL OVERRIDES */}
       {isHost && (
         <div className="bg-[var(--color-surface-elevated)] border-2 border-amber-400/80 rounded-3xl p-4 shadow-md space-y-3.5">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold font-display uppercase tracking-wider text-amber-700 dark:text-amber-300 flex items-center space-x-1">
               <Gavel className="w-4 h-4 text-amber-600" />
-              <span>Host Console & Manual Hammer</span>
+              <span>Host Console & AI Seats</span>
             </span>
 
             <button
@@ -1076,9 +1164,9 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
 
           <div>
             <span className="block text-[10px] font-bold text-[var(--color-text-dim)] uppercase tracking-wider mb-1.5">
-              Tap a Franchise Paddle to Bid:
+              Tap Paddle to Bid · Toggle 🤖 AI Bot on Empty Seats:
             </span>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 max-h-36 overflow-y-auto">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 max-h-40 overflow-y-auto">
               {teamsList.map((t) => {
                 const tMaxSquad = room?.settings?.maxSquadSize || room?.settings?.squadSize || 25;
                 const tPlayerCount = t.players?.length || 0;
@@ -1106,44 +1194,63 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
                   nextStepAmount <= tMaxBid &&
                   nextStepAmount <= t.purse;
 
+                const isAi = Boolean((t as any).isAiBot);
+                const isUnclaimed = !t.ownerToken || isAi;
+
                 return (
-                  <button
+                  <div
                     key={t.id}
-                    type="button"
-                    disabled={!canPaddleBid || bidding}
-                    onClick={() => {
-                      setHostPaddleTeamId(t.id);
-                      handlePlaceBid(t.id, nextStepAmount, isFirstBid ? 0 : 1);
-                    }}
-                    className={`min-h-[44px] px-2 py-1.5 rounded-lg border text-left transition flex flex-col justify-between ${
+                    className={`rounded-lg border p-1.5 flex flex-col justify-between space-y-1 ${
                       lot?.leadingTeamId === t.id
                         ? 'border-amber-400 bg-amber-50 dark:bg-amber-950/40'
-                        : canPaddleBid
-                        ? 'border-[var(--color-border)] bg-[var(--color-surface)] hover:bg-[var(--color-primary-light)]'
-                        : 'opacity-40 border-dashed border-gray-300 dark:border-gray-800 cursor-not-allowed'
+                        : 'border-[var(--color-border)] bg-[var(--color-surface)]'
                     }`}
                   >
-                    <div className="flex items-center justify-between">
-                      <span className="font-display font-black text-xs text-[var(--color-text-main)] truncate">
-                        {t.shortName}
-                      </span>
-                      {lot?.leadingTeamId === t.id && (
-                        <span className="text-[9px] font-bold text-amber-600 uppercase">Lead</span>
-                      )}
-                    </div>
-                    <div className="text-[10px] font-mono text-[var(--color-text-muted)] flex justify-between">
-                      <span>₹{t.purse} left</span>
-                      <span className="font-bold text-[var(--color-primary)]">
-                        +₹{nextStepAmount}
-                      </span>
-                    </div>
-                  </button>
+                    <button
+                      type="button"
+                      disabled={!canPaddleBid || bidding}
+                      onClick={() => {
+                        setHostPaddleTeamId(t.id);
+                        handlePlaceBid(t.id, nextStepAmount, isFirstBid ? 0 : 1);
+                      }}
+                      className="text-left w-full cursor-pointer disabled:opacity-40"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-display font-black text-xs text-[var(--color-text-main)] truncate">
+                          {t.shortName}
+                        </span>
+                        {lot?.leadingTeamId === t.id && (
+                          <span className="text-[9px] font-bold text-amber-600 uppercase">Lead</span>
+                        )}
+                      </div>
+                      <div className="text-[10px] font-mono text-[var(--color-text-muted)] flex justify-between">
+                        <span>₹{t.purse}</span>
+                        <span className="font-bold text-[var(--color-primary)]">+₹{nextStepAmount}</span>
+                      </div>
+                    </button>
+
+                    {isUnclaimed && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          toggleAiBotTeamTransaction(room.code, t.id, !isAi)
+                        }
+                        className={`w-full py-0.5 px-1 rounded text-[9px] font-black uppercase flex items-center justify-center space-x-1 cursor-pointer ${
+                          isAi
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-[var(--color-surface-subtle)] text-[var(--color-text-dim)] hover:text-[var(--color-text-main)]'
+                        }`}
+                      >
+                        <Bot className="w-2.5 h-2.5" />
+                        <span>{isAi ? 'AI Active' : '+ AI Bot'}</span>
+                      </button>
+                    )}
+                  </div>
                 );
               })}
             </div>
           </div>
 
-          {/* Manual SOLD / UNSOLD / UNDO Buttons */}
           <div className="grid grid-cols-3 gap-2 pt-1 border-t border-[var(--color-border)]">
             <button
               type="button"

@@ -302,3 +302,87 @@ export function pickRandomBalanced(pool: Player[], totalCount: number): Player[]
 
   return shuffle(selected);
 }
+export type PitchProfile = 'balanced' | 'spin' | 'flat' | 'seam';
+
+export interface StructuredAuctionSet {
+  setNumber: number;
+  title: string;
+  players: Player[];
+}
+
+/**
+ * Dynamically scales required bowlers & keepers to whatever minSquad size the room uses (e.g., 7, 9, or 11).
+ */
+export function getDynamicRoleRequirements(minSquad: number) {
+  const playingCount = Math.max(5, minSquad || 11);
+  const minBowlers = Math.max(3, Math.floor(playingCount * 0.45)); // e.g., 3 bowlers for 7-player game, 5 for 11-player
+  const sixthBowlerTarget = minBowlers + 1;
+  return {
+    playingCount,
+    minBowlers,
+    sixthBowlerTarget,
+  };
+}
+
+/**
+ * Groups any 350-player pool into Official IPL-Style Sets:
+ * Set 1 & 2: Marquee Superstars (6 per set)
+ * Sets 3-7: Capped Batters, All-Rounders, Wicketkeepers, Fast Bowlers, Spinners
+ * Sets 8-12: Uncapped Indian & Overseas Specialists
+ */
+export function buildStructuredAuctionSets(players: Player[]): StructuredAuctionSet[] {
+  const remaining = [...players];
+  const takeMatching = (predicate: (p: Player) => boolean, limit?: number): Player[] => {
+    const matched: Player[] = [];
+    for (let i = 0; i < remaining.length; i++) {
+      if (predicate(remaining[i])) {
+        matched.push(remaining[i]);
+        remaining.splice(i, 1);
+        i--;
+        if (limit && matched.length >= limit) break;
+      }
+    }
+    return matched;
+  };
+
+  // Sort high-base-price stars to the front for Marquee sets
+  remaining.sort((a, b) => (b.basePrice || 0.5) - (a.basePrice || 0.5));
+
+  const set1 = takeMatching((p) => (p.basePrice || 0) >= 2.0 && p.cappedStatus !== 'Uncapped', 6);
+  const set2 = takeMatching((p) => (p.basePrice || 0) >= 1.5 && p.cappedStatus !== 'Uncapped', 6);
+
+  const isCapped = (p: Player) => p.cappedStatus !== 'Uncapped';
+  const isSpinner = (p: Player) => {
+    const s = (p.bowlingStyle || '').toLowerCase();
+    return s.includes('spin') || s.includes('orthodox') || s.includes('offbreak') || s.includes('legbreak');
+  };
+
+  const set3 = takeMatching((p) => isCapped(p) && p.role === 'BAT');
+  const set4 = takeMatching((p) => isCapped(p) && p.role === 'AR');
+  const set5 = takeMatching((p) => isCapped(p) && p.role === 'WK');
+  const set6 = takeMatching((p) => isCapped(p) && p.role === 'BOWL' && !isSpinner(p));
+  const set7 = takeMatching((p) => isCapped(p) && p.role === 'BOWL' && isSpinner(p));
+
+  const set8 = takeMatching((p) => p.role === 'BAT');
+  const set9 = takeMatching((p) => p.role === 'AR');
+  const set10 = takeMatching((p) => p.role === 'WK');
+  const set11 = takeMatching((p) => p.role === 'BOWL' && !isSpinner(p));
+  const set12 = takeMatching((p) => true); // Remaining spinners & prospects
+
+  const rawSets: StructuredAuctionSet[] = [
+    { setNumber: 1, title: 'Set 1 · Marquee Superstars I', players: set1 },
+    { setNumber: 2, title: 'Set 2 · Marquee Superstars II', players: set2 },
+    { setNumber: 3, title: 'Set 3 · Capped Specialist Batters', players: set3 },
+    { setNumber: 4, title: 'Set 4 · Capped All-Rounders', players: set4 },
+    { setNumber: 5, title: 'Set 5 · Capped Wicketkeepers', players: set5 },
+    { setNumber: 6, title: 'Set 6 · Capped Fast Bowlers', players: set6 },
+    { setNumber: 7, title: 'Set 7 · Capped Spinners', players: set7 },
+    { setNumber: 8, title: 'Set 8 · Uncapped Batters', players: set8 },
+    { setNumber: 9, title: 'Set 9 · Uncapped All-Rounders', players: set9 },
+    { setNumber: 10, title: 'Set 10 · Uncapped Wicketkeepers', players: set10 },
+    { setNumber: 11, title: 'Set 11 · Uncapped Fast Bowlers', players: set11 },
+    { setNumber: 12, title: 'Set 12 · Uncapped Spinners & Prospects', players: set12 },
+  ];
+
+  return rawSets.filter((s) => s.players.length > 0);
+}

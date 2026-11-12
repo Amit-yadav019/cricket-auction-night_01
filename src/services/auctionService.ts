@@ -804,3 +804,119 @@ export async function toggleThinkingTimeTransaction(
     return { success: false };
   }
 }
+
+// 1. Live Table Reactions & Eye-Contact Bluffs (👀 Watching, 🔥 Price Up!, 🤝 Good Buy, ❌ Out)
+export async function sendTableReactionTransaction(
+  roomCodeInput: string,
+  teamId: string,
+  teamShort: string,
+  emoji: string,
+  label: string
+): Promise<void> {
+  const roomCode = roomCodeInput.trim().toUpperCase();
+  const roomRef = doc(db, 'rooms', roomCode);
+  try {
+    await updateDoc(roomRef, {
+      tableReaction: {
+        teamId,
+        teamShort,
+        emoji,
+        label,
+        timestamp: Date.now(),
+      },
+    });
+  } catch {}
+}
+
+// 2. Host Assigns/Removes Smart AI Bot Owner to an Empty Franchise Seat
+export async function toggleAiBotTeamTransaction(
+  roomCodeInput: string,
+  teamId: string,
+  enableAi: boolean
+): Promise<void> {
+  const roomCode = roomCodeInput.trim().toUpperCase();
+  const roomRef = doc(db, 'rooms', roomCode);
+  try {
+    await runTransaction(db, async (tx) => {
+      const snap = await tx.get(roomRef);
+      if (!snap.exists()) return;
+      const room = snap.data() as any;
+      const teams: Team[] = Array.isArray(room.teams) ? room.teams : Object.values(room.teams || {});
+      const updated = teams.map((t) => {
+        if (t.id !== teamId) return t;
+        return {
+          ...t,
+          isAiBot: enableAi,
+          claimedByOwnerName: enableAi ? '🤖 AI Front Office' : '',
+          ownerToken: enableAi ? `ai_bot_${t.id}` : '',
+        };
+      });
+      tx.update(roomRef, { teams: updated });
+    });
+  } catch {}
+}
+
+// 3. Accelerated Auction Shortlist Submission (Each franchise nominates up to 8 unsold/uncapped players)
+export async function submitAcceleratedShortlistTransaction(
+  roomCodeInput: string,
+  teamId: string,
+  playerIds: string[]
+): Promise<{ success: boolean }> {
+  const roomCode = roomCodeInput.trim().toUpperCase();
+  const roomRef = doc(db, 'rooms', roomCode);
+  try {
+    await updateDoc(roomRef, {
+      [`acceleratedShortlists.${teamId}`]: playerIds.slice(0, 8),
+    });
+    return { success: true };
+  } catch {
+    return { success: false };
+  }
+}
+
+// 4. Launch Accelerated Round with ONLY Nominated Shortlist Players
+export async function startAcceleratedRoundTransaction(
+  roomCodeInput: string,
+  hostToken: string
+): Promise<{ success: boolean; error?: string }> {
+  const roomCode = roomCodeInput.trim().toUpperCase();
+  const roomRef = doc(db, 'rooms', roomCode);
+  try {
+    return await runTransaction(db, async (tx) => {
+      const snap = await tx.get(roomRef);
+      if (!snap.exists()) throw new Error('Room not found');
+      const room = snap.data() as any;
+      if (room.hostToken !== hostToken) throw new Error('Unauthorized');
+
+      const shortlists: Record<string, string[]> = room.acceleratedShortlists || {};
+      const nominatedIds = new Set<string>(Object.values(shortlists).flat());
+      const pool: Player[] = room.allPlayers || room.playerPool || [];
+
+      const acceleratedQueue = pool.filter(
+        (p) => p.status !== 'sold' && (nominatedIds.size === 0 || nominatedIds.has(p.id))
+      );
+
+      if (acceleratedQueue.length === 0) {
+        throw new Error('No unsold/nominated players available for Accelerated Round.');
+      }
+
+      const [firstPlayer, ...restQueue] = acceleratedQueue;
+      tx.update(roomRef, {
+        status: 'active',
+        round: (room.round || 1) + 1,
+        isAccelerated: true,
+        queue: restQueue,
+        currentLot: {
+          player: firstPlayer,
+          currentBid: null,
+          leadingTeamId: null,
+          leadingTeamName: null,
+          bidHistory: [],
+        },
+      });
+      return { success: true };
+    });
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Failed to start accelerated round' };
+  }
+}
