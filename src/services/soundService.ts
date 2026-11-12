@@ -45,7 +45,6 @@ class BroadcastSoundEngine {
     return this.muted;
   }
 
-  // Synthesized Broadcast Auction Tension BGM (Deep rhythmic pulse + stadium chord)
   startBroadcastBgm() {
     if (this.muted || this.bgmPlaying) return;
     try {
@@ -54,7 +53,7 @@ class BroadcastSoundEngine {
       this.bgmPlaying = true;
 
       let step = 0;
-      const bassNotes = [65.41, 65.41, 77.78, 87.31]; // C2, C2, Eb2, F2 tension groove
+      const bassNotes = [65.41, 65.41, 77.78, 87.31];
 
       const playPulse = () => {
         if (this.muted || !this.bgmPlaying || !this.ctx) return;
@@ -184,6 +183,10 @@ class BroadcastSoundEngine {
     } catch {}
   }
 
+  playGavel() {
+    this.playGavelCrack();
+  }
+
   playSold() {
     this.playGavelCrack();
   }
@@ -206,6 +209,30 @@ class BroadcastSoundEngine {
       osc.start(t);
       osc.stop(t + 0.28);
     } catch {}
+  }
+
+  playOutbid() {
+    if (this.muted) return;
+    try {
+      this.initCtx();
+      if (!this.ctx) return;
+      const t = this.ctx.currentTime;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(440, t);
+      osc.frequency.exponentialRampToValueAtTime(260, t + 0.16);
+      gain.gain.setValueAtTime(0.28, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.18);
+    } catch {}
+  }
+
+  playUndo() {
+    this.playOutbid();
   }
 
   playBidBeep() {
@@ -237,6 +264,10 @@ class BroadcastSoundEngine {
     this.playBidBeep();
   }
 
+  playClick() {
+    this.playBidBeep();
+  }
+
   playCountdownTick() {
     if (this.muted) return;
     try {
@@ -259,6 +290,14 @@ class BroadcastSoundEngine {
       osc.start(t);
       osc.stop(t + 0.045);
     } catch {}
+  }
+
+  playTimerTick() {
+    this.playCountdownTick();
+  }
+
+  playWarning() {
+    this.playCountdownTick();
   }
 
   playTimeoutAlert() {
