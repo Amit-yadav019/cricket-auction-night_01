@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Wallet, Users, Shield, ChevronRight, ChevronLeft, Flame, Gavel, Trophy, Sparkles } from 'lucide-react';
 import { RoomData } from '../services/auctionService';
 import { calculateMaxBid } from '../game/auctionRules';
@@ -18,16 +18,21 @@ export const BroadcastHUD: React.FC<BroadcastHUDProps> = ({ room }) => {
     amount: number;
   } | null>(null);
 
+  const lastHandledTimestampRef = useRef<number | null>(null);
+
   const teams = Array.isArray(room?.teams) ? room.teams : [];
   const minSquad = room?.settings?.minSquadSize || room?.settings?.squadSize || 11;
   const maxSquad = room?.settings?.maxSquadSize || 25;
   const purseUnit = room?.settings?.purseUnit || 'Cr';
 
-  // Trigger 3D Swinging Gavel + Glowing Stamp + Franchise Badge on SOLD/UNSOLD
+  // Trigger 3D Swinging Gavel + Glowing Stamp once per result, then auto-clear in 2.2s
   useEffect(() => {
     const res = room?.lastResult;
     if (!res || !res.timestamp) return;
-    if (Date.now() - res.timestamp < 4000) {
+    if (res.timestamp === lastHandledTimestampRef.current) return;
+
+    if (Date.now() - res.timestamp < 5000) {
+      lastHandledTimestampRef.current = res.timestamp;
       const matchedTeam = teams.find(
         (t) => t.name === res.teamName || t.shortName === res.teamName
       );
@@ -39,7 +44,10 @@ export const BroadcastHUD: React.FC<BroadcastHUDProps> = ({ room }) => {
         amount: res.amount,
       });
       sound.playGavelCrack();
-      const timer = setTimeout(() => setStampOverlay(null), 3200);
+
+      const timer = setTimeout(() => {
+        setStampOverlay(null);
+      }, 2200);
       return () => clearTimeout(timer);
     }
   }, [room?.lastResult?.timestamp]);
@@ -53,19 +61,6 @@ export const BroadcastHUD: React.FC<BroadcastHUDProps> = ({ room }) => {
     }
     return () => sound.stopCrowdAmbience();
   }, [room?.status]);
-
-  // Countdown tick if room timer is in final 5 seconds
-  useEffect(() => {
-    const expiresAt = (room as any)?.timerExpiresAt;
-    if (!expiresAt || room?.status !== 'active') return;
-    const interval = setInterval(() => {
-      const remaining = Math.ceil((expiresAt - Date.now()) / 1000);
-      if (remaining > 0 && remaining <= 5) {
-        sound.playCountdownTick();
-      }
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [(room as any)?.timerExpiresAt, room?.status]);
 
   const allSold: { name: string; team: string; price: number }[] = [];
   teams.forEach((t) => {
@@ -83,7 +78,6 @@ export const BroadcastHUD: React.FC<BroadcastHUDProps> = ({ room }) => {
 
   return (
     <>
-      {/* Custom Broadcast Motion Keyframes */}
       <style>{`
         @keyframes gavelSlam {
           0% { transform: rotate(-55deg) scale(1.4); opacity: 0; }
@@ -102,10 +96,10 @@ export const BroadcastHUD: React.FC<BroadcastHUDProps> = ({ room }) => {
           100% { transform: translateX(-50%); }
         }
         .animate-gavel-slam {
-          animation: gavelSlam 0.48s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+          animation: gavelSlam 0.45s cubic-bezier(0.22, 1, 0.36, 1) forwards;
         }
         .animate-stamp-impact {
-          animation: stampImpact 0.42s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+          animation: stampImpact 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
         }
         .animate-ticker-marquee {
           display: inline-flex;
@@ -116,11 +110,10 @@ export const BroadcastHUD: React.FC<BroadcastHUDProps> = ({ room }) => {
         }
       `}</style>
 
-      {/* 1. 3D SWINGING GAVEL & GLOWING SOLD/UNSOLD STAMP WITH FRANCHISE BADGE */}
+      {/* 1. NON-BLOCKING 3D SWINGING GAVEL & GLOWING SOLD/UNSOLD STAMP */}
       {stampOverlay && (
-        <div className="fixed inset-0 z-50 pointer-events-none flex items-center justify-center bg-black/60 backdrop-blur-xs">
+        <div className="fixed inset-0 z-50 pointer-events-none flex items-center justify-center bg-black/50 backdrop-blur-[2px]">
           <div className="relative flex flex-col items-center p-8 sm:p-10 rounded-3xl bg-gradient-to-b from-stone-900 via-stone-950 to-black border-2 border-amber-500/60 shadow-[0_0_60px_rgba(245,158,11,0.35)] max-w-sm w-full mx-4 text-center overflow-hidden">
-            {/* Radial Broadcast Spotlight */}
             <div
               className="absolute inset-0 pointer-events-none"
               style={{
@@ -131,14 +124,12 @@ export const BroadcastHUD: React.FC<BroadcastHUDProps> = ({ room }) => {
               }}
             />
 
-            {/* Swinging 3D Gavel Icon */}
-            <div className="animate-gavel-slam relative w-20 h-20 rounded-3xl bg-gradient-to-tr from-amber-600/30 to-yellow-400/20 border border-amber-400/50 text-amber-400 flex items-center justify-center mb-4 shadow-xl">
-              <Gavel className="w-11 h-11 drop-shadow-[0_4px_12px_rgba(251,191,36,0.6)]" />
+            <div className="animate-gavel-slam relative w-18 h-18 rounded-3xl bg-gradient-to-tr from-amber-600/30 to-yellow-400/20 border border-amber-400/50 text-amber-400 flex items-center justify-center mb-3 shadow-xl">
+              <Gavel className="w-10 h-10 drop-shadow-[0_4px_12px_rgba(251,191,36,0.6)]" />
             </div>
 
-            {/* Slamming Glowing Stamp */}
             <div
-              className={`animate-stamp-impact px-9 py-2.5 rounded-2xl border-4 font-display font-black text-4xl sm:text-5xl tracking-widest uppercase shadow-2xl ${
+              className={`animate-stamp-impact px-8 py-2 rounded-2xl border-4 font-display font-black text-4xl sm:text-5xl tracking-widest uppercase shadow-2xl ${
                 stampOverlay.type === 'SOLD'
                   ? 'border-emerald-400 text-emerald-400 bg-emerald-950/90 shadow-[0_0_35px_rgba(52,211,153,0.55)]'
                   : 'border-rose-500 text-rose-500 bg-rose-950/90 shadow-[0_0_35px_rgba(244,63,94,0.55)]'
@@ -147,14 +138,12 @@ export const BroadcastHUD: React.FC<BroadcastHUDProps> = ({ room }) => {
               {stampOverlay.type}
             </div>
 
-            {/* Player Name */}
-            <h3 className="text-2xl font-black font-display uppercase tracking-wide text-white mt-5">
+            <h3 className="text-2xl font-black font-display uppercase tracking-wide text-white mt-4">
               {stampOverlay.playerName}
             </h3>
 
-            {/* Franchise Crest Badge & Hammer Price */}
             {stampOverlay.type === 'SOLD' ? (
-              <div className="mt-3 flex flex-col items-center space-y-1.5">
+              <div className="mt-2.5 flex flex-col items-center space-y-1">
                 <div className="inline-flex items-center space-x-2 px-3.5 py-1 rounded-full bg-amber-500/20 border border-amber-400/50">
                   <span className="w-5 h-5 rounded-full bg-amber-500 text-stone-950 font-display font-black text-[10px] flex items-center justify-center">
                     {stampOverlay.teamShort}
@@ -169,7 +158,7 @@ export const BroadcastHUD: React.FC<BroadcastHUDProps> = ({ room }) => {
               </div>
             ) : (
               <p className="text-xs font-bold uppercase tracking-widest text-rose-400 mt-2">
-                Returned to Unsold Pool
+                Next Player Entering Arena...
               </p>
             )}
           </div>
@@ -237,7 +226,7 @@ export const BroadcastHUD: React.FC<BroadcastHUDProps> = ({ room }) => {
         )}
       </div>
 
-      {/* 3. CONTINUOUS BROADCAST MARQUEE TICKER TAPE (BOTTOM FOOTER) */}
+      {/* 3. CONTINUOUS BROADCAST MARQUEE TICKER TAPE */}
       <div className="fixed bottom-0 left-0 right-0 z-30 bg-stone-950/95 border-t border-amber-500/40 text-white py-1.5 px-3 overflow-hidden flex items-center space-x-3 text-[11px] font-mono shadow-2xl">
         <span className="px-2.5 py-0.5 rounded bg-gradient-to-r from-rose-600 to-amber-600 text-white font-display font-black text-[9px] uppercase tracking-widest shrink-0 flex items-center space-x-1 shadow-sm">
           <Flame className="w-3 h-3 animate-pulse" />

@@ -136,7 +136,7 @@ export default function App() {
     setViewState('room');
   };
 
-  // Subscribe to room doc
+  // Persistent Firestore real-time subscription (locked solely to roomCode so it never drops)
   useEffect(() => {
     if (!roomCode) return;
 
@@ -144,13 +144,13 @@ export default function App() {
     const unsubscribe = subscribeToRoom(roomCode, (updatedRoom) => {
       setLoading(false);
       if (updatedRoom) {
-        setRoom(updatedRoom);
+        setRoom({ ...updatedRoom });
         setConnectionError('');
 
         const params = new URLSearchParams(window.location.search);
         const urlHostToken = params.get('host');
         const storedHostToken =
-          urlHostToken || hostToken || localStorage.getItem(`cricket_host_token_${roomCode}`) || '';
+          urlHostToken || localStorage.getItem(`cricket_host_token_${roomCode}`) || '';
 
         if (
           storedHostToken &&
@@ -169,7 +169,7 @@ export default function App() {
     });
 
     return () => unsubscribe();
-  }, [roomCode, hostToken]);
+  }, [roomCode]);
 
   // Host Heartbeat effect: ping every 6 seconds
   useEffect(() => {

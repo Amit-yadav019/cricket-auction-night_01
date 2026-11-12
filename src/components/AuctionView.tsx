@@ -54,6 +54,10 @@ interface AuctionViewProps {
   onOpenSummary: () => void;
 }
 
+const OPENING_UNSOLD_SECONDS = 8.0;
+const POST_BID_SOLD_SECONDS = 6.0;
+const HOLD_DURATION_SECONDS = 10;
+
 export const AuctionView: React.FC<AuctionViewProps> = ({
   room,
   isHost,
@@ -69,15 +73,14 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
   const [hostActionLoading, setHostActionLoading] = useState(false);
   const [thinkingLoading, setThinkingLoading] = useState(false);
 
-  // Auto-Gavel Timer States (3s initial, 4s after bid, 5s per hold)
+  // Auto-Gavel Timer States (8s opening unsold, 6s post-bid sold, 10s hold)
   const [autoTimerEnabled, setAutoTimerEnabled] = useState<boolean>(true);
-  const [lotSecondsLeft, setLotSecondsLeft] = useState<number>(3.0);
+  const [lotSecondsLeft, setLotSecondsLeft] = useState<number>(OPENING_UNSOLD_SECONDS);
   const [holdSecondsLeft, setHoldSecondsLeft] = useState<number>(0);
   const [bgmActive, setBgmActive] = useState<boolean>(false);
 
-  // Track how many 5s holds the owner has taken on the current player
+  // Track how many 10s holds the owner has taken on the current player
   const [playerHoldCount, setPlayerHoldCount] = useState<number>(0);
-
   const [selectedMultiplier, setSelectedMultiplier] = useState<number>(1);
 
   const teamsList: Team[] = Array.isArray(room?.teams)
@@ -88,8 +91,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
     teamsList[0]?.id || ''
   );
 
-  const [showStamp, setShowStamp] = useState(false);
-  const [lastStampResult, setLastStampResult] = useState(room?.lastResult);
+  const [lastStampTs, setLastStampTs] = useState<number | undefined>(room?.lastResult?.timestamp);
   const [isScreenShaking, setIsScreenShaking] = useState(false);
   const [voiceNarration, setVoiceNarration] = useState<boolean>(false);
 
@@ -97,7 +99,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
   const prevBidCountRef = useRef<number>(0);
   const prevThinkingTsRef = useRef<number | null>(null);
   const autoHammerLockRef = useRef<string | null>(null);
-  const lotDeadlineRef = useRef<number>(Date.now() + 3000);
+  const lotDeadlineRef = useRef<number>(Date.now() + OPENING_UNSOLD_SECONDS * 1000);
   const lastTickSecondRef = useRef<number>(-1);
 
   const [isHostOffline, setIsHostOffline] = useState(false);
@@ -108,23 +110,28 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
   const thinkingAlert = (room as any)?.thinkingAlert;
   const isHoldActive = Boolean(thinkingAlert && holdSecondsLeft > 0);
 
-  // Reset hold counter & 3-second opening timer when a new player arrives
+  // Reset hold counter, error state, & 8.0-second opening timer immediately when a new player enters
   useEffect(() => {
     if (!lot?.player?.id) return;
     setPlayerHoldCount(0);
+    setBiddingError('');
+    setSelectedMultiplier(1);
     autoHammerLockRef.current = null;
-    const initialDuration = lot.currentBid === null ? 3000 : 4000;
-    lotDeadlineRef.current = Date.now() + initialDuration;
-    setLotSecondsLeft(initialDuration / 1000);
+    lastTickSecondRef.current = -1;
+
+    const initialDuration = lot.currentBid === null ? OPENING_UNSOLD_SECONDS : POST_BID_SOLD_SECONDS;
+    lotDeadlineRef.current = Date.now() + initialDuration * 1000;
+    setLotSecondsLeft(initialDuration);
   }, [lot?.player?.id]);
 
-  // Reset to 4.0 seconds every time a new bid is placed
+  // Reset to 6.0 seconds every time a new bid is placed
   useEffect(() => {
     if (!lot?.player?.id) return;
     if (lot.currentBid !== null) {
       autoHammerLockRef.current = null;
-      lotDeadlineRef.current = Date.now() + 4000;
-      setLotSecondsLeft(4.0);
+      lastTickSecondRef.current = -1;
+      lotDeadlineRef.current = Date.now() + POST_BID_SOLD_SECONDS * 1000;
+      setLotSecondsLeft(POST_BID_SOLD_SECONDS);
     }
   }, [lot?.currentBid, lot?.leadingTeamId, lot?.bidHistory?.length]);
 
@@ -139,7 +146,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
     return () => clearInterval(interval);
   }, [room?.hostHeartbeat]);
 
-  // 5-Second Strategic Hold Countdown (Supports Unlimited Holds per Player)
+  // 10-Second Strategic Hold Countdown (Unlimited Holds per Player)
   useEffect(() => {
     if (!thinkingAlert?.expiresAt) {
       setHoldSecondsLeft(0);
@@ -156,9 +163,9 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
       const remSec = Math.max(0, Number((remMs / 1000).toFixed(1)));
       setHoldSecondsLeft(remSec);
 
-      // Keep main lot deadline paused while hold is active, giving 4s after hold ends
-      const postHoldBuffer = lot?.currentBid === null ? 3000 : 4000;
-      lotDeadlineRef.current = Date.now() + postHoldBuffer;
+      // Pause main lot deadline while hold is active, giving fresh buffer when hold ends
+      const postHoldBuffer = lot?.currentBid === null ? OPENING_UNSOLD_SECONDS : POST_BID_SOLD_SECONDS;
+      lotDeadlineRef.current = Date.now() + postHoldBuffer * 1000;
 
       if (remSec === 0 && isHost) {
         const roomIdentifier = room?.code || (room as any)?.roomCode;
@@ -173,12 +180,11 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
     return () => clearInterval(interval);
   }, [thinkingAlert?.expiresAt, thinkingAlert?.timestamp, isHost, soundEnabled, room?.code, lot?.currentBid]);
 
-  // Main 3s / 4s Auto-Gavel Countdown Loop
+  // Main 8s Unsold / 6s Sold Auto-Gavel Countdown Loop
   useEffect(() => {
     if (!lot?.player?.id || room?.status !== 'active' || !autoTimerEnabled) return;
 
     const interval = setInterval(() => {
-      // Pause countdown while a 5-second Strategic Hold is active
       if (thinkingAlert?.expiresAt && thinkingAlert.expiresAt > Date.now()) {
         return;
       }
@@ -187,14 +193,12 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
       const remainingSec = Math.max(0, Number((remainingMs / 1000).toFixed(1)));
       setLotSecondsLeft(remainingSec);
 
-      // Tick sound on whole seconds
       const wholeSec = Math.ceil(remainingSec);
-      if (wholeSec > 0 && wholeSec !== lastTickSecondRef.current) {
+      if (wholeSec > 0 && wholeSec <= 5 && wholeSec !== lastTickSecondRef.current) {
         lastTickSecondRef.current = wholeSec;
         if (soundEnabled) sound.playCountdownTick();
       }
 
-      // Auto-Hammer when timer hits 0.0s (Executed by Host client)
       if (remainingMs <= 0 && isHost && !hostActionLoading) {
         const lockKey = `${lot.player.id}_${lot.currentBid ?? 'none'}_${lot.bidHistory?.length || 0}`;
         if (autoHammerLockRef.current === lockKey) return;
@@ -204,10 +208,8 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
         if (!roomIdentifier) return;
 
         if (lot.currentBid !== null && lot.leadingTeamId) {
-          // 4 seconds passed after last bid -> Auto SOLD to last bidder
           markSoldTransaction(roomIdentifier, hostToken);
         } else {
-          // 3 seconds passed with no opening bid -> Auto UNSOLD
           markUnsoldTransaction(roomIdentifier, hostToken);
         }
       }
@@ -229,13 +231,12 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
     hostToken,
   ]);
 
-  // Stamp animation trigger when lastResult changes
+  // Screen shake & voice narration on SOLD/UNSOLD (BroadcastHUD renders the visual stamp cleanly)
   useEffect(() => {
-    if (room?.lastResult && room.lastResult.timestamp !== lastStampResult?.timestamp) {
-      setLastStampResult(room.lastResult);
-      setShowStamp(true);
+    if (room?.lastResult && room.lastResult.timestamp !== lastStampTs) {
+      setLastStampTs(room.lastResult.timestamp);
       setIsScreenShaking(true);
-      setTimeout(() => setIsScreenShaking(false), 400);
+      setTimeout(() => setIsScreenShaking(false), 380);
 
       if (soundEnabled) {
         if (room.lastResult.type === 'SOLD') {
@@ -254,11 +255,8 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
             : `${room.lastResult.playerName} goes unsold.`;
         speakAuctioneer(text);
       }
-
-      const timer = setTimeout(() => setShowStamp(false), 2600);
-      return () => clearTimeout(timer);
     }
-  }, [room?.lastResult, soundEnabled, voiceNarration, lastStampResult?.timestamp, room?.settings?.purseUnit]);
+  }, [room?.lastResult?.timestamp, soundEnabled, voiceNarration, lastStampTs, room?.settings?.purseUnit]);
 
   // Detect outbid and bid audio cues
   useEffect(() => {
@@ -376,9 +374,8 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
       if (!res?.success) {
         setBiddingError(res?.error || 'Failed to place bid');
       } else {
-        // Reset 4.0s bid timer & dismiss any active hold
-        lotDeadlineRef.current = Date.now() + 4000;
-        setLotSecondsLeft(4.0);
+        lotDeadlineRef.current = Date.now() + POST_BID_SOLD_SECONDS * 1000;
+        setLotSecondsLeft(POST_BID_SOLD_SECONDS);
         if (thinkingAlert) {
           await toggleThinkingTimeTransaction(roomIdentifier, '', '', false);
         }
@@ -390,8 +387,8 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
     }
   };
 
-  // Owner Request: Take a 5-second Strategic Hold (Unlimited times per player)
-  const handleTake5SecHold = async () => {
+  // Owner Request: Take a 10-second Strategic Hold (Unlimited uses per player)
+  const handleTake10SecHold = async () => {
     const roomIdentifier = room?.code || (room as any)?.roomCode;
     if (!roomIdentifier || !myClaimedTeam) return;
     const nextCount = playerHoldCount + 1;
@@ -402,7 +399,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
       myClaimedTeam.id,
       myClaimedTeam.name,
       true,
-      5,
+      HOLD_DURATION_SECONDS,
       nextCount
     );
     setThinkingLoading(false);
@@ -465,7 +462,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
         setBiddingError(res?.error || 'Failed to undo bid');
       } else {
         if (soundEnabled) playUndoSound();
-        lotDeadlineRef.current = Date.now() + 4000;
+        lotDeadlineRef.current = Date.now() + POST_BID_SOLD_SECONDS * 1000;
       }
     } catch (err: any) {
       setBiddingError(err?.message || 'Transaction failed');
@@ -578,8 +575,20 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
       lot.bidHistory?.[0]?.teamId !== lot.bidHistory?.[1]?.teamId
   );
 
-  const maxTimerWindow = isFirstBid ? 3.0 : 4.0;
+  const maxTimerWindow = isFirstBid ? OPENING_UNSOLD_SECONDS : POST_BID_SOLD_SECONDS;
   const timerPercent = Math.min(100, Math.max(0, (lotSecondsLeft / maxTimerWindow) * 100));
+
+  // Realistic Broadcast Auctioneer Callout Stage
+  const getAuctioneerCallout = () => {
+    if (isHoldActive) return '⏸️ HAMMER PAUSED — STRATEGY HUDDLE';
+    if (lotSecondsLeft <= 1.5) {
+      return isFirstBid ? '⚠️ FINAL CALL — GOING UNSOLD!' : '🔨 GOING TWICE... FINAL CALL!';
+    }
+    if (lotSecondsLeft <= 3.2) {
+      return isFirstBid ? '⏳ ANY OPENING BIDS?' : '📢 GOING ONCE...';
+    }
+    return isFirstBid ? `OPENING BID WINDOW (${OPENING_UNSOLD_SECONDS}s)` : `ACTIVE BIDDING (${POST_BID_SOLD_SECONDS}s CLOCK)`;
+  };
 
   return (
     <div
@@ -587,12 +596,12 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
         isScreenShaking ? 'shake-action' : ''
       }`}
     >
-      {/* Broadcast Arena Spotlight Glow */}
+      {/* Broadcast Stage Radial Spotlight */}
       <div
         className="fixed inset-0 pointer-events-none -z-10"
         style={{
           background:
-            'radial-gradient(circle at 50% 18%, rgba(245, 158, 11, 0.12), transparent 65%)',
+            'radial-gradient(circle at 50% 18%, rgba(245, 158, 11, 0.14), transparent 65%)',
         }}
       />
 
@@ -603,7 +612,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
         </div>
       )}
 
-      {/* LIVE 5-SECOND STRATEGIC HOLD OVERLAY BANNER */}
+      {/* LIVE 10-SECOND STRATEGIC HOLD OVERLAY BANNER */}
       {isHoldActive && thinkingAlert && (
         <div className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-amber-500 via-yellow-400 to-amber-500 text-stone-950 p-3.5 shadow-[0_0_30px_rgba(245,158,11,0.5)] border-2 border-amber-200 space-y-2">
           <div className="flex items-center justify-between">
@@ -621,7 +630,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
                   </span>
                 </div>
                 <p className="text-[11px] font-bold text-stone-900 mt-0.5">
-                  Auto-Gavel Paused — Owner Thinking Time
+                  10s Thinking Window — Auto-Gavel Paused
                 </p>
               </div>
             </div>
@@ -647,7 +656,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
           <div className="w-full h-1.5 bg-stone-950/30 rounded-full overflow-hidden">
             <div
               className="h-full bg-stone-950 transition-all duration-100 ease-linear"
-              style={{ width: `${Math.min(100, (holdSecondsLeft / 5) * 100)}%` }}
+              style={{ width: `${Math.min(100, (holdSecondsLeft / HOLD_DURATION_SECONDS) * 100)}%` }}
             />
           </div>
         </div>
@@ -704,23 +713,12 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
         </div>
       )}
 
-      {/* BROADCAST PLAYER PODIUM CARD */}
+      {/* BROADCAST PLAYER PODIUM CARD (Keyed by lot.player.id for instant zero-refresh transitions) */}
       {lot ? (
-        <div className="bg-gradient-to-b from-[var(--color-surface-elevated)] to-[var(--color-surface)] border border-[var(--color-border)] rounded-3xl p-4 sm:p-5 shadow-xl relative overflow-hidden">
-          {showStamp && lastStampResult && (
-            <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/50 backdrop-blur-[2px] pointer-events-none">
-              <div
-                className={`stamp-animate rubber-stamp px-6 py-2.5 rounded-2xl font-display font-black text-4xl sm:text-5xl uppercase tracking-widest shadow-2xl ${
-                  lastStampResult.type === 'SOLD'
-                    ? 'text-[var(--stamp-sold)] bg-white/95 dark:bg-black/90'
-                    : 'text-[var(--stamp-unsold)] bg-white/95 dark:bg-black/90'
-                }`}
-              >
-                {lastStampResult.type}
-              </div>
-            </div>
-          )}
-
+        <div
+          key={lot.player.id}
+          className="bg-gradient-to-b from-[var(--color-surface-elevated)] to-[var(--color-surface)] border border-[var(--color-border)] rounded-3xl p-4 sm:p-5 shadow-xl relative overflow-hidden transition-all duration-300"
+        >
           {/* Top Bar: Role Badge, Auto-Gavel Clock & Base Price */}
           <div className="flex items-center justify-between mb-2">
             <span
@@ -731,13 +729,12 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
               {lot.player.role}
             </span>
 
-            {/* AUTO-GAVEL LIVE COUNTDOWN BADGE */}
             {autoTimerEnabled && (
               <div
                 className={`px-3 py-1 rounded-full font-mono text-xs font-black flex items-center space-x-1.5 border shadow-xs transition-all ${
                   isHoldActive
                     ? 'bg-amber-500/20 border-amber-500 text-amber-500'
-                    : lotSecondsLeft <= 1.5
+                    : lotSecondsLeft <= 2.0
                     ? 'bg-rose-600 text-white border-rose-400 animate-pulse scale-105'
                     : 'bg-[var(--color-surface-subtle)] border-[var(--color-border)] text-[var(--color-text-main)]'
                 }`}
@@ -746,7 +743,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
                 <span>
                   {isHoldActive
                     ? 'PAUSED'
-                    : `${lotSecondsLeft.toFixed(1)}s ${isFirstBid ? 'OPEN' : 'HAMMER'}`}
+                    : `${lotSecondsLeft.toFixed(1)}s ${isFirstBid ? 'UNSOLD' : 'SOLD'}`}
                 </span>
               </div>
             )}
@@ -763,7 +760,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
                 className={`h-full transition-all duration-100 ease-linear ${
                   isHoldActive
                     ? 'bg-amber-400'
-                    : lotSecondsLeft <= 1.5
+                    : lotSecondsLeft <= 2.0
                     ? 'bg-rose-500'
                     : 'bg-emerald-500'
                 }`}
@@ -802,17 +799,28 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
               )}
           </div>
 
-          {/* Current Bid Scoreboard */}
+          {/* Current Bid Scoreboard with Live Auctioneer Stage Callout */}
           <div className="my-3 text-center bg-[var(--color-surface-subtle)] border border-[var(--color-border)] rounded-2xl py-3.5 px-4 shadow-inner">
-            {isBiddingWar && (
+            {isBiddingWar ? (
               <div className="mb-2 inline-flex items-center space-x-1 px-3 py-0.5 rounded-full bg-red-600 text-white text-[10px] font-black font-display uppercase tracking-wider bidding-war-pulse shadow-sm">
                 <Flame className="w-3.5 h-3.5 fill-white" />
                 <span>Bidding War In Progress!</span>
               </div>
+            ) : (
+              autoTimerEnabled && (
+                <div
+                  className={`mb-1.5 inline-flex items-center space-x-1 px-2.5 py-0.5 rounded-full text-[10px] font-black font-display uppercase tracking-wider ${
+                    lotSecondsLeft <= 2.0 && !isHoldActive
+                      ? 'bg-rose-500/20 text-rose-500 animate-pulse'
+                      : 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
+                  }`}
+                >
+                  <Sparkles className="w-3 h-3" />
+                  <span>{getAuctioneerCallout()}</span>
+                </div>
+              )
             )}
-            <div className="text-[11px] font-bold font-display uppercase tracking-wider text-[var(--color-text-muted)]">
-              {lot.currentBid === null ? 'Opening Bid (3s Window)' : 'Current Leading Bid (4s Hammer)'}
-            </div>
+
             <div className="text-4xl sm:text-5xl font-black font-display tracking-tight text-[var(--color-accent)] scoreboard-num mt-0.5">
               ₹{lot.currentBid !== null ? lot.currentBid : lot.player.basePrice}{' '}
               <span className="text-2xl font-bold">{room?.settings?.purseUnit || 'Cr'}</span>
@@ -894,7 +902,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
         </div>
       )}
 
-      {/* OWNER BIDDING CONTROLS & UNLIMITED 5-SECOND HOLD BUTTON */}
+      {/* OWNER BIDDING CONTROLS & UNLIMITED 10-SECOND HOLD BUTTON */}
       {activeBiddingTeam && (
         <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-3xl p-4 shadow-md space-y-3">
           <div className="flex items-center justify-between pb-2 border-b border-[var(--color-border)]">
@@ -975,7 +983,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
             </div>
           )}
 
-          {/* Bid + Unlimited 5s Hold Action Row */}
+          {/* Bid + Unlimited 10s Hold Action Row */}
           <div className="flex items-stretch space-x-2">
             <button
               type="button"
@@ -1001,18 +1009,18 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
               )}
             </button>
 
-            {/* UNLIMITED 5-SECOND HOLD BUTTON FOR OWNERS */}
+            {/* UNLIMITED 10-SECOND HOLD BUTTON FOR OWNERS */}
             {myClaimedTeam && lot && (
               <button
                 type="button"
                 disabled={thinkingLoading}
-                onClick={handleTake5SecHold}
-                title="Pause the auto-gavel for 5 seconds (Unlimited uses per player)"
+                onClick={handleTake10SecHold}
+                title="Pause the auto-gavel for 10 seconds (Unlimited uses per player)"
                 className="px-4 py-2 rounded-2xl bg-amber-500 hover:bg-amber-600 text-stone-950 font-display font-black text-xs uppercase tracking-wider transition shadow-lg cursor-pointer flex flex-col items-center justify-center active:scale-95 shrink-0"
               >
                 <div className="flex items-center space-x-1">
                   <Hand className="w-4 h-4" />
-                  <span>+5s HOLD</span>
+                  <span>+10s HOLD</span>
                 </div>
                 <span className="text-[9px] font-mono font-bold opacity-80">
                   {playerHoldCount > 0 ? `Used ${playerHoldCount}x` : 'Pause Hammer'}
@@ -1032,7 +1040,6 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
               <span>Host Console & Manual Hammer</span>
             </span>
 
-            {/* Toggle Auto-Gavel Timer On/Off */}
             <button
               type="button"
               onClick={() => setAutoTimerEnabled(!autoTimerEnabled)}
@@ -1043,7 +1050,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
               }`}
             >
               <Zap className="w-3 h-3" />
-              <span>{autoTimerEnabled ? 'Auto-Gavel ON (3s/4s)' : 'Manual Mode'}</span>
+              <span>{autoTimerEnabled ? 'Auto-Gavel ON (8s/6s)' : 'Manual Mode'}</span>
             </button>
           </div>
 
@@ -1136,7 +1143,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
             </div>
           </div>
 
-          {/* Manual SOLD / UNSOLD / UNDO Buttons (Always Available to Host) */}
+          {/* Manual SOLD / UNSOLD / UNDO Buttons */}
           <div className="grid grid-cols-3 gap-2 pt-1 border-t border-[var(--color-border)]">
             <button
               type="button"

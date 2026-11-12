@@ -781,7 +781,7 @@ export async function toggleThinkingTimeTransaction(
   teamId: string,
   teamName: string,
   needsTime: boolean,
-  durationSeconds: number = 5,
+  durationSeconds: number = 10,
   holdCount: number = 1
 ): Promise<{ success: boolean }> {
   const roomCode = roomCodeInput.trim().toUpperCase();
