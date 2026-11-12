@@ -11,6 +11,12 @@ import {
   VolumeX,
   Award,
   Hand,
+  Clock,
+  PauseCircle,
+  PlayCircle,
+  Music,
+  Zap,
+  Sparkles,
 } from 'lucide-react';
 import {
   RoomData,
@@ -63,10 +69,17 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
   const [hostActionLoading, setHostActionLoading] = useState(false);
   const [thinkingLoading, setThinkingLoading] = useState(false);
 
-  // Selected raise multiplier for owner (1, 2, or 4 steps)
+  // Auto-Gavel Timer States (3s initial, 4s after bid, 5s per hold)
+  const [autoTimerEnabled, setAutoTimerEnabled] = useState<boolean>(true);
+  const [lotSecondsLeft, setLotSecondsLeft] = useState<number>(3.0);
+  const [holdSecondsLeft, setHoldSecondsLeft] = useState<number>(0);
+  const [bgmActive, setBgmActive] = useState<boolean>(false);
+
+  // Track how many 5s holds the owner has taken on the current player
+  const [playerHoldCount, setPlayerHoldCount] = useState<number>(0);
+
   const [selectedMultiplier, setSelectedMultiplier] = useState<number>(1);
 
-  // Normalize teams array safely whether array or object map
   const teamsList: Team[] = Array.isArray(room?.teams)
     ? (room.teams as Team[])
     : Object.values(room?.teams || {});
@@ -75,20 +88,47 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
     teamsList[0]?.id || ''
   );
 
-  // Track stamp visibility for 2.5s
   const [showStamp, setShowStamp] = useState(false);
   const [lastStampResult, setLastStampResult] = useState(room?.lastResult);
   const [isScreenShaking, setIsScreenShaking] = useState(false);
-
-  // Voice narration toggle
   const [voiceNarration, setVoiceNarration] = useState<boolean>(false);
 
   const prevLeadingTeamIdRef = useRef<string | null>(null);
   const prevBidCountRef = useRef<number>(0);
+  const prevThinkingTsRef = useRef<number | null>(null);
+  const autoHammerLockRef = useRef<string | null>(null);
+  const lotDeadlineRef = useRef<number>(Date.now() + 3000);
+  const lastTickSecondRef = useRef<number>(-1);
 
-  // Check if host heartbeat is stale (> 25 seconds ago)
   const [isHostOffline, setIsHostOffline] = useState(false);
 
+  const lot = room?.currentLot;
+  const currentBid = lot?.currentBid ?? null;
+  const isFirstBid = currentBid === null;
+  const thinkingAlert = (room as any)?.thinkingAlert;
+  const isHoldActive = Boolean(thinkingAlert && holdSecondsLeft > 0);
+
+  // Reset hold counter & 3-second opening timer when a new player arrives
+  useEffect(() => {
+    if (!lot?.player?.id) return;
+    setPlayerHoldCount(0);
+    autoHammerLockRef.current = null;
+    const initialDuration = lot.currentBid === null ? 3000 : 4000;
+    lotDeadlineRef.current = Date.now() + initialDuration;
+    setLotSecondsLeft(initialDuration / 1000);
+  }, [lot?.player?.id]);
+
+  // Reset to 4.0 seconds every time a new bid is placed
+  useEffect(() => {
+    if (!lot?.player?.id) return;
+    if (lot.currentBid !== null) {
+      autoHammerLockRef.current = null;
+      lotDeadlineRef.current = Date.now() + 4000;
+      setLotSecondsLeft(4.0);
+    }
+  }, [lot?.currentBid, lot?.leadingTeamId, lot?.bidHistory?.length]);
+
+  // Host Heartbeat check
   useEffect(() => {
     const checkHeartbeat = () => {
       const diff = Date.now() - (room?.hostHeartbeat || 0);
@@ -98,6 +138,96 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
     const interval = setInterval(checkHeartbeat, 5000);
     return () => clearInterval(interval);
   }, [room?.hostHeartbeat]);
+
+  // 5-Second Strategic Hold Countdown (Supports Unlimited Holds per Player)
+  useEffect(() => {
+    if (!thinkingAlert?.expiresAt) {
+      setHoldSecondsLeft(0);
+      return;
+    }
+
+    if (thinkingAlert.timestamp !== prevThinkingTsRef.current) {
+      prevThinkingTsRef.current = thinkingAlert.timestamp;
+      if (soundEnabled) sound.playTimeoutAlert();
+    }
+
+    const tick = () => {
+      const remMs = thinkingAlert.expiresAt - Date.now();
+      const remSec = Math.max(0, Number((remMs / 1000).toFixed(1)));
+      setHoldSecondsLeft(remSec);
+
+      // Keep main lot deadline paused while hold is active, giving 4s after hold ends
+      const postHoldBuffer = lot?.currentBid === null ? 3000 : 4000;
+      lotDeadlineRef.current = Date.now() + postHoldBuffer;
+
+      if (remSec === 0 && isHost) {
+        const roomIdentifier = room?.code || (room as any)?.roomCode;
+        if (roomIdentifier) {
+          toggleThinkingTimeTransaction(roomIdentifier, '', '', false);
+        }
+      }
+    };
+
+    tick();
+    const interval = setInterval(tick, 100);
+    return () => clearInterval(interval);
+  }, [thinkingAlert?.expiresAt, thinkingAlert?.timestamp, isHost, soundEnabled, room?.code, lot?.currentBid]);
+
+  // Main 3s / 4s Auto-Gavel Countdown Loop
+  useEffect(() => {
+    if (!lot?.player?.id || room?.status !== 'active' || !autoTimerEnabled) return;
+
+    const interval = setInterval(() => {
+      // Pause countdown while a 5-second Strategic Hold is active
+      if (thinkingAlert?.expiresAt && thinkingAlert.expiresAt > Date.now()) {
+        return;
+      }
+
+      const remainingMs = lotDeadlineRef.current - Date.now();
+      const remainingSec = Math.max(0, Number((remainingMs / 1000).toFixed(1)));
+      setLotSecondsLeft(remainingSec);
+
+      // Tick sound on whole seconds
+      const wholeSec = Math.ceil(remainingSec);
+      if (wholeSec > 0 && wholeSec !== lastTickSecondRef.current) {
+        lastTickSecondRef.current = wholeSec;
+        if (soundEnabled) sound.playCountdownTick();
+      }
+
+      // Auto-Hammer when timer hits 0.0s (Executed by Host client)
+      if (remainingMs <= 0 && isHost && !hostActionLoading) {
+        const lockKey = `${lot.player.id}_${lot.currentBid ?? 'none'}_${lot.bidHistory?.length || 0}`;
+        if (autoHammerLockRef.current === lockKey) return;
+        autoHammerLockRef.current = lockKey;
+
+        const roomIdentifier = room?.code || (room as any)?.roomCode;
+        if (!roomIdentifier) return;
+
+        if (lot.currentBid !== null && lot.leadingTeamId) {
+          // 4 seconds passed after last bid -> Auto SOLD to last bidder
+          markSoldTransaction(roomIdentifier, hostToken);
+        } else {
+          // 3 seconds passed with no opening bid -> Auto UNSOLD
+          markUnsoldTransaction(roomIdentifier, hostToken);
+        }
+      }
+    }, 100);
+
+    return () => clearInterval(interval);
+  }, [
+    lot?.player?.id,
+    lot?.currentBid,
+    lot?.leadingTeamId,
+    lot?.bidHistory?.length,
+    room?.status,
+    autoTimerEnabled,
+    thinkingAlert?.expiresAt,
+    isHost,
+    hostActionLoading,
+    soundEnabled,
+    room?.code,
+    hostToken,
+  ]);
 
   // Stamp animation trigger when lastResult changes
   useEffect(() => {
@@ -113,6 +243,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
           sound.playGavelCrack();
         } else {
           playUnsoldChime();
+          sound.playUnsold();
         }
       }
 
@@ -146,7 +277,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
       } else {
         if (soundEnabled && latest) {
           playBidChime(latest.amount);
-          sound.playBidBeep();
+          sound.playBid();
         }
       }
     }
@@ -154,11 +285,6 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
     prevLeadingTeamIdRef.current = room.currentLot.leadingTeamId || null;
   }, [room?.currentLot?.bidHistory?.length, room?.currentLot?.leadingTeamId, ownerToken, soundEnabled, teamsList]);
 
-  const lot = room?.currentLot;
-  const currentBid = lot?.currentBid ?? null;
-  const isFirstBid = currentBid === null;
-
-  // Determine active bidding team
   const myClaimedTeam = teamsList.find((t) => t.ownerToken === ownerToken);
   const activeBiddingTeam = isHost
     ? teamsList.find((t) => t.id === hostPaddleTeamId) || myClaimedTeam || teamsList[0]
@@ -171,12 +297,10 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
   const minSquad = room?.settings?.minSquadSize || maxSquad;
   const slotsLeft = maxSquad - teamPlayerCount;
 
-  // Check if every team has fulfilled minimum squad requirement
   const allTeamsMetMin =
     teamsList.length > 0 &&
     teamsList.every((t) => (t.players?.length || 0) >= minSquad);
 
-  // Max bid calculation using proper team object
   const maxAllowedBid = activeBiddingTeam
     ? calculateMaxBid(
         {
@@ -187,7 +311,6 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
       )
     : 0;
 
-  // Calculate proposed bid amount
   let proposedBidAmount = 0;
   if (isFirstBid) {
     proposedBidAmount = lot?.player?.basePrice || 0.5;
@@ -196,7 +319,6 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
     proposedBidAmount = Number(((currentBid || 0) + selectedMultiplier * step).toFixed(2));
   }
 
-  // Reason why active bidding team cannot bid
   let bidDisabledReason = '';
   if (!lot) {
     bidDisabledReason = 'No active lot';
@@ -216,7 +338,6 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
 
   const canBid = !bidDisabledReason && !bidding;
 
-  // Handle owner or host placing a bid
   const handlePlaceBid = async (overrideTeamId?: string, overrideAmount?: number, overrideMult?: number) => {
     if (!lot || !lot.player) return;
 
@@ -254,6 +375,13 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
 
       if (!res?.success) {
         setBiddingError(res?.error || 'Failed to place bid');
+      } else {
+        // Reset 4.0s bid timer & dismiss any active hold
+        lotDeadlineRef.current = Date.now() + 4000;
+        setLotSecondsLeft(4.0);
+        if (thinkingAlert) {
+          await toggleThinkingTimeTransaction(roomIdentifier, '', '', false);
+        }
       }
     } catch (err: any) {
       setBiddingError(err?.message || 'Bidding transaction failed');
@@ -262,28 +390,35 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
     }
   };
 
-  // Owner signal: Request thinking time
-  const handleRequestThinkingTime = async () => {
+  // Owner Request: Take a 5-second Strategic Hold (Unlimited times per player)
+  const handleTake5SecHold = async () => {
     const roomIdentifier = room?.code || (room as any)?.roomCode;
     if (!roomIdentifier || !myClaimedTeam) return;
+    const nextCount = playerHoldCount + 1;
+    setPlayerHoldCount(nextCount);
     setThinkingLoading(true);
     await toggleThinkingTimeTransaction(
       roomIdentifier,
       myClaimedTeam.id,
       myClaimedTeam.name,
-      true
+      true,
+      5,
+      nextCount
     );
     setThinkingLoading(false);
   };
 
-  // Host dismiss thinking time alert
-  const handleDismissThinkingAlert = async () => {
+  const handleReleaseHold = async () => {
     const roomIdentifier = room?.code || (room as any)?.roomCode;
-    if (!roomIdentifier || !isHost) return;
+    if (!roomIdentifier) return;
     await toggleThinkingTimeTransaction(roomIdentifier, '', '', false);
   };
 
-  // Host action: Sold
+  const handleToggleBgm = () => {
+    const active = sound.toggleBroadcastBgm();
+    setBgmActive(active);
+  };
+
   const handleHostSold = async () => {
     const roomIdentifier = room?.code || (room as any)?.roomCode;
     if (!isHost || hostActionLoading || !roomIdentifier) return;
@@ -302,7 +437,6 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
     }
   };
 
-  // Host action: Unsold
   const handleHostUnsold = async () => {
     const roomIdentifier = room?.code || (room as any)?.roomCode;
     if (!isHost || hostActionLoading || !roomIdentifier) return;
@@ -321,7 +455,6 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
     }
   };
 
-  // Host action: Undo
   const handleHostUndo = async () => {
     const roomIdentifier = room?.code || (room as any)?.roomCode;
     if (!isHost || hostActionLoading || !roomIdentifier) return;
@@ -332,6 +465,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
         setBiddingError(res?.error || 'Failed to undo bid');
       } else {
         if (soundEnabled) playUndoSound();
+        lotDeadlineRef.current = Date.now() + 4000;
       }
     } catch (err: any) {
       setBiddingError(err?.message || 'Transaction failed');
@@ -340,7 +474,6 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
     }
   };
 
-  // Host action: Re-auction
   const handleHostReAuction = async () => {
     const roomIdentifier = room?.code || (room as any)?.roomCode;
     if (!isHost || hostActionLoading || !roomIdentifier) return;
@@ -357,7 +490,6 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
     }
   };
 
-  // Host action: End Auction
   const handleHostEndAuction = async () => {
     const roomIdentifier = room?.code || (room as any)?.roomCode;
     if (!isHost || hostActionLoading || !roomIdentifier) return;
@@ -378,24 +510,23 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
   const getRoleBadgeColor = (role: PlayerRole) => {
     switch (role) {
       case 'BAT':
-        return 'bg-blue-100 text-blue-900 dark:bg-blue-950 dark:text-blue-200 border-blue-400';
+        return 'bg-blue-500/15 text-blue-600 dark:text-blue-300 border-blue-500/40';
       case 'WK':
-        return 'bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-200 border-amber-400';
+        return 'bg-amber-500/15 text-amber-600 dark:text-amber-300 border-amber-500/40';
       case 'AR':
-        return 'bg-emerald-100 text-emerald-900 dark:bg-emerald-950 dark:text-emerald-200 border-emerald-400';
+        return 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 border-emerald-500/40';
       case 'BOWL':
-        return 'bg-purple-100 text-purple-900 dark:bg-purple-950 dark:text-purple-200 border-purple-400';
+        return 'bg-purple-500/15 text-purple-600 dark:text-purple-300 border-purple-500/40';
     }
   };
 
-  // Round ended screen
   if (room?.status === 'round_ended') {
     const unsoldPlayers = (room.allPlayers || room.playerPool || []).filter(
       (p) => p.status === 'unsold'
     );
     return (
       <div className="w-full max-w-[540px] mx-auto px-4 py-8 text-center space-y-6">
-        <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-3xl p-6 shadow-sm">
+        <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-3xl p-6 shadow-xl">
           <div className="w-16 h-16 rounded-2xl bg-[var(--color-primary-light)] text-[var(--color-primary)] mx-auto flex items-center justify-center mb-4">
             <RefreshCw className="w-8 h-8" />
           </div>
@@ -447,10 +578,24 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
       lot.bidHistory?.[0]?.teamId !== lot.bidHistory?.[1]?.teamId
   );
 
-  const thinkingAlert = (room as any)?.thinkingAlert;
+  const maxTimerWindow = isFirstBid ? 3.0 : 4.0;
+  const timerPercent = Math.min(100, Math.max(0, (lotSecondsLeft / maxTimerWindow) * 100));
 
   return (
-    <div className={`w-full max-w-[540px] mx-auto px-4 py-3 pb-16 space-y-3 ${isScreenShaking ? 'shake-action' : ''}`}>
+    <div
+      className={`w-full max-w-[540px] mx-auto px-4 py-3 pb-16 space-y-3 relative ${
+        isScreenShaking ? 'shake-action' : ''
+      }`}
+    >
+      {/* Broadcast Arena Spotlight Glow */}
+      <div
+        className="fixed inset-0 pointer-events-none -z-10"
+        style={{
+          background:
+            'radial-gradient(circle at 50% 18%, rgba(245, 158, 11, 0.12), transparent 65%)',
+        }}
+      />
+
       {!isHost && isHostOffline && (
         <div className="p-3 bg-red-600 text-white rounded-xl text-xs font-bold flex items-center justify-center space-x-2 shadow-md animate-pulse">
           <AlertTriangle className="w-4 h-4 flex-shrink-0" />
@@ -458,22 +603,53 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
         </div>
       )}
 
-      {/* LIVE THINKING TIME ALERT BANNER (VISIBLE TO ALL, DISMISSIBLE BY HOST) */}
-      {thinkingAlert && (
-        <div className="p-3 bg-amber-500 text-stone-950 rounded-2xl text-xs font-black uppercase tracking-wider flex items-center justify-between shadow-lg animate-pulse">
-          <div className="flex items-center space-x-2">
-            <Hand className="w-4 h-4 flex-shrink-0" />
-            <span>{thinkingAlert.teamName} needs thinking time! Hold the hammer.</span>
+      {/* LIVE 5-SECOND STRATEGIC HOLD OVERLAY BANNER */}
+      {isHoldActive && thinkingAlert && (
+        <div className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-amber-500 via-yellow-400 to-amber-500 text-stone-950 p-3.5 shadow-[0_0_30px_rgba(245,158,11,0.5)] border-2 border-amber-200 space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-2.5">
+              <div className="w-9 h-9 rounded-xl bg-stone-950 text-amber-400 flex items-center justify-center shadow-md animate-bounce">
+                <PauseCircle className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="flex items-center space-x-1.5">
+                  <span className="text-[10px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded bg-stone-950 text-amber-400">
+                    HOLD #{thinkingAlert.holdCount || 1}
+                  </span>
+                  <span className="text-xs font-black uppercase tracking-wide">
+                    {thinkingAlert.teamName}
+                  </span>
+                </div>
+                <p className="text-[11px] font-bold text-stone-900 mt-0.5">
+                  Auto-Gavel Paused — Owner Thinking Time
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center space-x-2">
+              <div className="px-3 py-1 rounded-xl bg-stone-950 text-amber-400 font-mono font-black text-base shadow-inner">
+                {holdSecondsLeft.toFixed(1)}s
+              </div>
+
+              {(isHost || (myClaimedTeam && thinkingAlert.teamId === myClaimedTeam.id)) && (
+                <button
+                  type="button"
+                  onClick={handleReleaseHold}
+                  className="px-2.5 py-1.5 bg-stone-950 hover:bg-stone-800 text-white rounded-xl text-[10px] font-black uppercase tracking-wider cursor-pointer flex items-center space-x-1"
+                >
+                  <PlayCircle className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Resume</span>
+                </button>
+              )}
+            </div>
           </div>
-          {isHost && (
-            <button
-              type="button"
-              onClick={handleDismissThinkingAlert}
-              className="px-2.5 py-1 bg-stone-950 text-white rounded-lg text-[10px] font-bold cursor-pointer hover:bg-stone-800"
-            >
-              Dismiss
-            </button>
-          )}
+
+          <div className="w-full h-1.5 bg-stone-950/30 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-stone-950 transition-all duration-100 ease-linear"
+              style={{ width: `${Math.min(100, (holdSecondsLeft / 5) * 100)}%` }}
+            />
+          </div>
         </div>
       )}
 
@@ -523,17 +699,16 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
         <div
           onClick={() => setBiddingError('')}
           className="p-2.5 bg-amber-50 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-700 rounded-xl text-center text-xs font-bold text-amber-900 dark:text-amber-100 transition hover:opacity-85 cursor-pointer shadow-xs"
-          title="Click to dismiss"
         >
           {biddingError} <span className="text-[10px] opacity-70 underline ml-1">(tap to dismiss)</span>
         </div>
       )}
 
-      {/* CURRENT PLAYER CARD */}
+      {/* BROADCAST PLAYER PODIUM CARD */}
       {lot ? (
-        <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-2xl p-4 sm:p-5 shadow-sm relative overflow-hidden">
+        <div className="bg-gradient-to-b from-[var(--color-surface-elevated)] to-[var(--color-surface)] border border-[var(--color-border)] rounded-3xl p-4 sm:p-5 shadow-xl relative overflow-hidden">
           {showStamp && lastStampResult && (
-            <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/45 backdrop-blur-[2px] pointer-events-none">
+            <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/50 backdrop-blur-[2px] pointer-events-none">
               <div
                 className={`stamp-animate rubber-stamp px-6 py-2.5 rounded-2xl font-display font-black text-4xl sm:text-5xl uppercase tracking-widest shadow-2xl ${
                   lastStampResult.type === 'SOLD'
@@ -546,23 +721,60 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
             </div>
           )}
 
-          {/* Top Info Bar: Role Badge & Base Price */}
+          {/* Top Bar: Role Badge, Auto-Gavel Clock & Base Price */}
           <div className="flex items-center justify-between mb-2">
             <span
-              className={`text-xs font-bold px-2 py-0.5 rounded-full border ${getRoleBadgeColor(
+              className={`text-xs font-black px-2.5 py-0.5 rounded-full border uppercase tracking-wider ${getRoleBadgeColor(
                 lot.player.role
               )}`}
             >
               {lot.player.role}
             </span>
+
+            {/* AUTO-GAVEL LIVE COUNTDOWN BADGE */}
+            {autoTimerEnabled && (
+              <div
+                className={`px-3 py-1 rounded-full font-mono text-xs font-black flex items-center space-x-1.5 border shadow-xs transition-all ${
+                  isHoldActive
+                    ? 'bg-amber-500/20 border-amber-500 text-amber-500'
+                    : lotSecondsLeft <= 1.5
+                    ? 'bg-rose-600 text-white border-rose-400 animate-pulse scale-105'
+                    : 'bg-[var(--color-surface-subtle)] border-[var(--color-border)] text-[var(--color-text-main)]'
+                }`}
+              >
+                <Clock className="w-3.5 h-3.5" />
+                <span>
+                  {isHoldActive
+                    ? 'PAUSED'
+                    : `${lotSecondsLeft.toFixed(1)}s ${isFirstBid ? 'OPEN' : 'HAMMER'}`}
+                </span>
+              </div>
+            )}
+
             <span className="text-xs font-bold text-[var(--color-text-dim)] font-mono">
               Base: ₹{lot.player.basePrice} {room?.settings?.purseUnit || 'Cr'}
             </span>
           </div>
 
+          {/* Animated Auto-Gavel Progress Bar */}
+          {autoTimerEnabled && (
+            <div className="w-full h-1.5 bg-[var(--color-surface-subtle)] rounded-full overflow-hidden mb-3 border border-[var(--color-border)]">
+              <div
+                className={`h-full transition-all duration-100 ease-linear ${
+                  isHoldActive
+                    ? 'bg-amber-400'
+                    : lotSecondsLeft <= 1.5
+                    ? 'bg-rose-500'
+                    : 'bg-emerald-500'
+                }`}
+                style={{ width: `${isHoldActive ? 100 : timerPercent}%` }}
+              />
+            </div>
+          )}
+
           {/* Player Name */}
           <div className="text-center my-1">
-            <h2 className="text-2xl sm:text-3xl font-black font-display tracking-wide uppercase text-[var(--color-text-main)]">
+            <h2 className="text-2xl sm:text-3xl font-black font-display tracking-wide uppercase text-[var(--color-text-main)] drop-shadow-xs">
               {lot.player.name}
             </h2>
           </div>
@@ -577,21 +789,21 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
 
             {(lot.player.role === 'BAT' || lot.player.role === 'WK' || lot.player.role === 'AR') &&
               lot.player.battingStyle && (
-                <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-300">
+                <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-blue-500/10 border border-blue-500/30 text-blue-600 dark:text-blue-300">
                   🏏 {lot.player.battingStyle}
                 </span>
               )}
 
             {(lot.player.role === 'BOWL' || lot.player.role === 'AR') &&
               lot.player.bowlingStyle && (
-                <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-purple-50 dark:bg-purple-950/60 border border-purple-200 dark:border-purple-800 text-purple-700 dark:text-purple-300">
+                <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-purple-500/10 border border-purple-500/30 text-purple-600 dark:text-purple-300">
                   ⚾ {lot.player.bowlingStyle}
                 </span>
               )}
           </div>
 
-          {/* Current Bid Display */}
-          <div className="my-3 text-center bg-[var(--color-surface-subtle)] border border-[var(--color-border)] rounded-xl py-3 px-4">
+          {/* Current Bid Scoreboard */}
+          <div className="my-3 text-center bg-[var(--color-surface-subtle)] border border-[var(--color-border)] rounded-2xl py-3.5 px-4 shadow-inner">
             {isBiddingWar && (
               <div className="mb-2 inline-flex items-center space-x-1 px-3 py-0.5 rounded-full bg-red-600 text-white text-[10px] font-black font-display uppercase tracking-wider bidding-war-pulse shadow-sm">
                 <Flame className="w-3.5 h-3.5 fill-white" />
@@ -599,7 +811,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
               </div>
             )}
             <div className="text-[11px] font-bold font-display uppercase tracking-wider text-[var(--color-text-muted)]">
-              {lot.currentBid === null ? 'Starting Bid Required' : 'Current Leading Bid'}
+              {lot.currentBid === null ? 'Opening Bid (3s Window)' : 'Current Leading Bid (4s Hammer)'}
             </div>
             <div className="text-4xl sm:text-5xl font-black font-display tracking-tight text-[var(--color-accent)] scoreboard-num mt-0.5">
               ₹{lot.currentBid !== null ? lot.currentBid : lot.player.basePrice}{' '}
@@ -621,12 +833,25 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
             )}
           </div>
 
-          {/* Voice Narration Button */}
-          <div className="mt-3 flex justify-end">
+          {/* Broadcast Audio & BGM Controls */}
+          <div className="mt-3 flex items-center justify-between pt-2 border-t border-[var(--color-border)]/60">
+            <button
+              type="button"
+              onClick={handleToggleBgm}
+              className={`px-2.5 py-1 rounded-lg text-[11px] flex items-center space-x-1 font-bold transition cursor-pointer ${
+                bgmActive
+                  ? 'bg-amber-500 text-stone-950 shadow-xs'
+                  : 'bg-[var(--color-surface-subtle)] text-[var(--color-text-dim)] hover:text-[var(--color-text-main)]'
+              }`}
+            >
+              <Music className="w-3.5 h-3.5" />
+              <span>{bgmActive ? 'Arena BGM ON' : 'Arena BGM OFF'}</span>
+            </button>
+
             <button
               type="button"
               onClick={() => setVoiceNarration(!voiceNarration)}
-              className={`px-2.5 py-1 rounded-md text-[11px] flex items-center space-x-1 font-bold transition cursor-pointer ${
+              className={`px-2.5 py-1 rounded-lg text-[11px] flex items-center space-x-1 font-bold transition cursor-pointer ${
                 voiceNarration
                   ? 'bg-[var(--color-primary)] text-white shadow-xs'
                   : 'bg-[var(--color-surface-subtle)] text-[var(--color-text-dim)] hover:text-[var(--color-text-main)]'
@@ -639,7 +864,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
 
           {/* Recent Bids Feed */}
           {(lot.bidHistory?.length || 0) > 0 && (
-            <div className="space-y-1 mt-2 mb-2">
+            <div className="space-y-1 mt-2.5">
               <div className="text-[10px] font-bold text-[var(--color-text-dim)] uppercase tracking-wider">
                 Recent Bids
               </div>
@@ -669,13 +894,13 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
         </div>
       )}
 
-      {/* OWNER BIDDING CONTROLS */}
+      {/* OWNER BIDDING CONTROLS & UNLIMITED 5-SECOND HOLD BUTTON */}
       {activeBiddingTeam && (
-        <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-2xl p-4 shadow-sm space-y-3">
+        <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-3xl p-4 shadow-md space-y-3">
           <div className="flex items-center justify-between pb-2 border-b border-[var(--color-border)]">
             <div className="truncate mr-2">
               <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--color-text-dim)]">
-                {isHost && !myClaimedTeam ? 'Host Bidding For' : 'Your Team'}
+                {isHost && !myClaimedTeam ? 'Host Bidding For' : 'Your Franchise'}
               </span>
               <div className="text-sm font-black font-display uppercase tracking-wide text-[var(--color-text-main)] truncate">
                 {activeBiddingTeam.name}
@@ -750,61 +975,78 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
             </div>
           )}
 
-          <button
-            type="button"
-            disabled={!canBid}
-            onClick={() => handlePlaceBid()}
-            className={`w-full min-h-[52px] py-3.5 px-4 rounded-xl font-display text-xl font-black uppercase tracking-wider transition shadow-md flex items-center justify-center space-x-2 ${
-              canBid
-                ? 'bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white cursor-pointer active:scale-[0.98]'
-                : 'bg-gray-300 dark:bg-gray-800 text-gray-500 cursor-not-allowed'
-            }`}
-          >
-            {bidding ? (
-              <span>Submitting Bid...</span>
-            ) : canBid ? (
-              <>
-                <Gavel className="w-5 h-5 fill-current transform -rotate-12" />
-                <span>
-                  BID ₹{proposedBidAmount} {room?.settings?.purseUnit || 'Cr'}
-                </span>
-              </>
-            ) : (
-              <span className="text-sm font-semibold">{bidDisabledReason}</span>
-            )}
-          </button>
-
-          {/* OWNER THINKING TIME BUTTON */}
-          {myClaimedTeam && lot && (
+          {/* Bid + Unlimited 5s Hold Action Row */}
+          <div className="flex items-stretch space-x-2">
             <button
               type="button"
-              disabled={thinkingLoading}
-              onClick={handleRequestThinkingTime}
-              className="w-full py-2.5 px-4 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-600 dark:text-amber-400 border border-amber-500/40 font-display text-xs font-black uppercase tracking-wider transition cursor-pointer flex items-center justify-center space-x-1.5 active:scale-95"
+              disabled={!canBid}
+              onClick={() => handlePlaceBid()}
+              className={`flex-1 min-h-[54px] py-3.5 px-4 rounded-2xl font-display text-xl font-black uppercase tracking-wider transition shadow-lg flex items-center justify-center space-x-2 ${
+                canBid
+                  ? 'bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white cursor-pointer active:scale-[0.98]'
+                  : 'bg-gray-300 dark:bg-gray-800 text-gray-500 cursor-not-allowed'
+              }`}
             >
-              <Hand className="w-4 h-4" />
-              <span>
-                {thinkingLoading ? 'Signaling Host...' : 'Need Time to Think (Hold Hammer)'}
-              </span>
+              {bidding ? (
+                <span>Submitting...</span>
+              ) : canBid ? (
+                <>
+                  <Gavel className="w-5 h-5 fill-current transform -rotate-12" />
+                  <span>
+                    BID ₹{proposedBidAmount} {room?.settings?.purseUnit || 'Cr'}
+                  </span>
+                </>
+              ) : (
+                <span className="text-sm font-semibold">{bidDisabledReason}</span>
+              )}
             </button>
-          )}
+
+            {/* UNLIMITED 5-SECOND HOLD BUTTON FOR OWNERS */}
+            {myClaimedTeam && lot && (
+              <button
+                type="button"
+                disabled={thinkingLoading}
+                onClick={handleTake5SecHold}
+                title="Pause the auto-gavel for 5 seconds (Unlimited uses per player)"
+                className="px-4 py-2 rounded-2xl bg-amber-500 hover:bg-amber-600 text-stone-950 font-display font-black text-xs uppercase tracking-wider transition shadow-lg cursor-pointer flex flex-col items-center justify-center active:scale-95 shrink-0"
+              >
+                <div className="flex items-center space-x-1">
+                  <Hand className="w-4 h-4" />
+                  <span>+5s HOLD</span>
+                </div>
+                <span className="text-[9px] font-mono font-bold opacity-80">
+                  {playerHoldCount > 0 ? `Used ${playerHoldCount}x` : 'Pause Hammer'}
+                </span>
+              </button>
+            )}
+          </div>
         </div>
       )}
 
-      {/* HOST CONTROLS & TEAM PADDLES */}
+      {/* HOST CONTROLS & MANUAL OVERRIDES */}
       {isHost && (
-        <div className="bg-[var(--color-surface-elevated)] border-2 border-amber-400/80 rounded-2xl p-4 shadow-md space-y-3.5">
+        <div className="bg-[var(--color-surface-elevated)] border-2 border-amber-400/80 rounded-3xl p-4 shadow-md space-y-3.5">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold font-display uppercase tracking-wider text-amber-700 dark:text-amber-300 flex items-center space-x-1">
               <Gavel className="w-4 h-4 text-amber-600" />
-              <span>Host Console & Team Paddles</span>
+              <span>Host Console & Manual Hammer</span>
             </span>
-            <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-200">
-              Host Authority
-            </span>
+
+            {/* Toggle Auto-Gavel Timer On/Off */}
+            <button
+              type="button"
+              onClick={() => setAutoTimerEnabled(!autoTimerEnabled)}
+              className={`text-[10px] font-mono font-black px-2.5 py-1 rounded-lg border cursor-pointer flex items-center space-x-1 transition ${
+                autoTimerEnabled
+                  ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/40'
+                  : 'bg-[var(--color-surface-subtle)] text-[var(--color-text-dim)] border-[var(--color-border)]'
+              }`}
+            >
+              <Zap className="w-3 h-3" />
+              <span>{autoTimerEnabled ? 'Auto-Gavel ON (3s/4s)' : 'Manual Mode'}</span>
+            </button>
           </div>
 
-          {/* SQUAD REQUIREMENT FULFILLED BANNER */}
           {allTeamsMetMin && (
             <div className="p-3 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-400 dark:border-emerald-700 rounded-xl space-y-2">
               <div className="flex items-center space-x-2 text-emerald-800 dark:text-emerald-200">
@@ -813,9 +1055,6 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
                   All Squad Targets Met ({minSquad}+ Players Each)!
                 </span>
               </div>
-              <p className="text-[11px] text-emerald-700 dark:text-emerald-300">
-                Every team has reached the required roster size. You can conclude the auction now instead of cycling through remaining players.
-              </p>
               <button
                 type="button"
                 disabled={hostActionLoading}
@@ -830,7 +1069,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
 
           <div>
             <span className="block text-[10px] font-bold text-[var(--color-text-dim)] uppercase tracking-wider mb-1.5">
-              Tap a Paddle to Bid For That Team:
+              Tap a Franchise Paddle to Bid:
             </span>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 max-h-36 overflow-y-auto">
               {teamsList.map((t) => {
@@ -897,7 +1136,7 @@ export const AuctionView: React.FC<AuctionViewProps> = ({
             </div>
           </div>
 
-          {/* Sold / Unsold / Undo Buttons */}
+          {/* Manual SOLD / UNSOLD / UNDO Buttons (Always Available to Host) */}
           <div className="grid grid-cols-3 gap-2 pt-1 border-t border-[var(--color-border)]">
             <button
               type="button"

@@ -776,19 +776,27 @@ export async function respondTradeTransaction(
     return { success: false, error: err?.message || 'Failed to process trade.' };
   }
   }
-
-  export async function toggleThinkingTimeTransaction(
+export async function toggleThinkingTimeTransaction(
   roomCodeInput: string,
   teamId: string,
   teamName: string,
-  needsTime: boolean
+  needsTime: boolean,
+  durationSeconds: number = 5,
+  holdCount: number = 1
 ): Promise<{ success: boolean }> {
   const roomCode = roomCodeInput.trim().toUpperCase();
   const roomRef = doc(db, 'rooms', roomCode);
   try {
     await updateDoc(roomRef, {
       thinkingAlert: needsTime
-        ? { teamId, teamName, timestamp: Date.now() }
+        ? {
+            teamId,
+            teamName,
+            durationSeconds,
+            holdCount,
+            timestamp: Date.now(),
+            expiresAt: Date.now() + durationSeconds * 1000,
+          }
         : null,
     });
     return { success: true };
